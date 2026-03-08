@@ -1,0 +1,14 @@
+app_id: "cli_replace_me"
+app_secret: "replace_me"
+authorized_open_id: "ou_replace_me"
+http_addr: "127.0.0.1:8787"
+default_work_dir: "/absolute/path/to/workdir"
+codex_path: "codex"
+codex_timeout: "20m"
+log_level: "info"
+ack_reaction_type: "Typing"
+recent_context_limit: 12
+reply_retry_count: 3
+read_timeout: "15s"
+write_timeout: "15s"
+shutdown_timeout: "10s"

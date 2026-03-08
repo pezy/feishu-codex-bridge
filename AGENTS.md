@@ -1,0 +1,2 @@
+- 遵循 Conventional Commits
+- 单元测试尽可能覆盖

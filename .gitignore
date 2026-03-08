@@ -1,0 +1,14 @@
+/.DS_Store
+/bin/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+*.out
+
+/config/config.yaml
+/.env
+/.env.*
+
+/tmp/
