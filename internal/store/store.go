@@ -3,12 +3,14 @@ package store
 import "time"
 
 type ConversationEntry struct {
-	ID        int64     `json:"id"`
-	Source    string    `json:"source"`
-	OpenID    string    `json:"open_id,omitempty"`
-	MessageID string    `json:"message_id,omitempty"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Source      string    `json:"source"`
+	OpenID      string    `json:"open_id,omitempty"`
+	MessageID   string    `json:"message_id,omitempty"`
+	Content     string    `json:"content"`
+	ContentType string    `json:"content_type,omitempty"`
+	FilePath    string    `json:"file_path,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type ExecutionRecord struct {
@@ -25,8 +27,11 @@ type ExecutionRecord struct {
 type MessageRecord struct {
 	MessageID      string     `json:"message_id"`
 	ChatID         string     `json:"chat_id"`
+	ChatType       string     `json:"chat_type,omitempty"`
+	MessageType    string     `json:"message_type,omitempty"`
 	SenderOpenID   string     `json:"sender_open_id"`
 	TextContent    string     `json:"text_content"`
+	RawContentJSON string     `json:"raw_content_json,omitempty"`
 	Status         string     `json:"status"`
 	AckMessageID   string     `json:"ack_message_id,omitempty"`
 	FinalMessageID string     `json:"final_message_id,omitempty"`
@@ -35,4 +40,16 @@ type MessageRecord struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+}
+
+type PairingRequest struct {
+	OpenID      string     `json:"open_id"`
+	Status      string     `json:"status"`
+	RequestedAt time.Time  `json:"requested_at"`
+	HandledAt   *time.Time `json:"handled_at,omitempty"`
+}
+
+type AuthorizedGroup struct {
+	ChatID    string    `json:"chat_id"`
+	CreatedAt time.Time `json:"created_at"`
 }

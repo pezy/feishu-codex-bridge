@@ -20,12 +20,15 @@ func TestSQLiteStoreTracksMessagesAndExecutions(t *testing.T) {
 	}()
 
 	message := MessageRecord{
-		MessageID:    "om_123",
-		ChatID:       "oc_123",
-		SenderOpenID: "ou_123",
-		TextContent:  "hello",
-		Status:       "received",
-		CreatedAt:    time.Now().UTC(),
+		MessageID:      "om_123",
+		ChatID:         "oc_123",
+		ChatType:       "p2p",
+		MessageType:    "text",
+		SenderOpenID:   "ou_123",
+		TextContent:    "hello",
+		RawContentJSON: `{"text":"hello"}`,
+		Status:         "received",
+		CreatedAt:      time.Now().UTC(),
 	}
 
 	inserted, err := store.TryCreateInbound(ctx, message)
@@ -45,11 +48,12 @@ func TestSQLiteStoreTracksMessagesAndExecutions(t *testing.T) {
 	}
 
 	entry := ConversationEntry{
-		Source:    "user",
-		OpenID:    "ou_123",
-		MessageID: "om_123",
-		Content:   "hello",
-		CreatedAt: time.Now().UTC(),
+		Source:      "user",
+		OpenID:      "ou_123",
+		MessageID:   "om_123",
+		Content:     "hello",
+		ContentType: "text",
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := store.AppendConversation(ctx, entry); err != nil {
 		t.Fatalf("AppendConversation: %v", err)
@@ -88,5 +92,51 @@ func TestSQLiteStoreTracksMessagesAndExecutions(t *testing.T) {
 	}
 	if lastExecution == nil || lastExecution.Output != "done" {
 		t.Fatalf("unexpected last execution: %+v", lastExecution)
+	}
+
+	if err := store.EnsureAuthorizedUser(ctx, "ou_123"); err != nil {
+		t.Fatalf("EnsureAuthorizedUser: %v", err)
+	}
+	authorized, err := store.IsAuthorizedUser(ctx, "ou_123")
+	if err != nil {
+		t.Fatalf("IsAuthorizedUser: %v", err)
+	}
+	if !authorized {
+		t.Fatalf("expected user to be authorized")
+	}
+
+	if err := store.CreateOrRefreshPairingRequest(ctx, "ou_456"); err != nil {
+		t.Fatalf("CreateOrRefreshPairingRequest: %v", err)
+	}
+	requests, err := store.ListPendingPairingRequests(ctx)
+	if err != nil {
+		t.Fatalf("ListPendingPairingRequests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].OpenID != "ou_456" {
+		t.Fatalf("unexpected pairing requests: %+v", requests)
+	}
+	if err := store.SetPairingRequestStatus(ctx, "ou_456", "approved"); err != nil {
+		t.Fatalf("SetPairingRequestStatus: %v", err)
+	}
+
+	if err := store.EnsureAuthorizedGroup(ctx, "oc_group_1"); err != nil {
+		t.Fatalf("EnsureAuthorizedGroup: %v", err)
+	}
+	groupAuthorized, err := store.IsAuthorizedGroup(ctx, "oc_group_1")
+	if err != nil {
+		t.Fatalf("IsAuthorizedGroup: %v", err)
+	}
+	if !groupAuthorized {
+		t.Fatalf("expected group to be authorized")
+	}
+	if err := store.RemoveAuthorizedGroup(ctx, "oc_group_1"); err != nil {
+		t.Fatalf("RemoveAuthorizedGroup: %v", err)
+	}
+	groupAuthorized, err = store.IsAuthorizedGroup(ctx, "oc_group_1")
+	if err != nil {
+		t.Fatalf("IsAuthorizedGroup after delete: %v", err)
+	}
+	if groupAuthorized {
+		t.Fatalf("expected group to be removed")
 	}
 }

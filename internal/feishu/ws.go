@@ -13,6 +13,8 @@ import (
 
 type BridgeHandler interface {
 	HandleIncomingMessage(context.Context, *larkim.P2MessageReceiveV1) error
+	AuthorizeGroup(context.Context, string) error
+	RemoveAuthorizedGroup(context.Context, string) error
 	MarkWSConnected()
 	MarkWSError(error)
 }
@@ -26,6 +28,36 @@ func NewWSClient(appID string, appSecret string, service BridgeHandler, logLevel
 	handler := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 			return service.HandleIncomingMessage(ctx, event)
+		}).
+		OnP2ChatMemberBotAddedV1(func(ctx context.Context, event *larkim.P2ChatMemberBotAddedV1) error {
+			if event == nil || event.Event == nil {
+				return nil
+			}
+			return service.AuthorizeGroup(ctx, value(event.Event.ChatId))
+		}).
+		OnP2ChatMemberBotDeletedV1(func(ctx context.Context, event *larkim.P2ChatMemberBotDeletedV1) error {
+			if event == nil || event.Event == nil {
+				return nil
+			}
+			return service.RemoveAuthorizedGroup(ctx, value(event.Event.ChatId))
+		}).
+		OnP2ChatDisbandedV1(func(ctx context.Context, event *larkim.P2ChatDisbandedV1) error {
+			if event == nil || event.Event == nil {
+				return nil
+			}
+			return service.RemoveAuthorizedGroup(ctx, value(event.Event.ChatId))
+		}).
+		OnP1AddBotV1(func(ctx context.Context, event *larkim.P1AddBotV1) error {
+			if event == nil || event.Event == nil {
+				return nil
+			}
+			return service.AuthorizeGroup(ctx, strings.TrimSpace(event.Event.OpenChatID))
+		}).
+		OnP1RemoveAddBotV1(func(ctx context.Context, event *larkim.P1RemoveBotV1) error {
+			if event == nil || event.Event == nil {
+				return nil
+			}
+			return service.RemoveAuthorizedGroup(ctx, strings.TrimSpace(event.Event.OpenChatID))
 		})
 
 	logger := &wsLogger{

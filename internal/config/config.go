@@ -26,6 +26,7 @@ type Config struct {
 	AppID              string        `yaml:"app_id"`
 	AppSecret          string        `yaml:"app_secret"`
 	AuthorizedOpenID   string        `yaml:"authorized_open_id"`
+	AuthorizedGroupIDs []string      `yaml:"authorized_group_chat_ids"`
 	HTTPAddr           string        `yaml:"http_addr"`
 	DefaultWorkDir     string        `yaml:"default_work_dir"`
 	CodexPath          string        `yaml:"codex_path"`
@@ -137,6 +138,7 @@ func applyEnvOverrides(cfg *Config) {
 	overrideString(&cfg.AppID, "FEISHU_CODEX_BRIDGE_APP_ID")
 	overrideString(&cfg.AppSecret, "FEISHU_CODEX_BRIDGE_APP_SECRET")
 	overrideString(&cfg.AuthorizedOpenID, "FEISHU_CODEX_BRIDGE_AUTHORIZED_OPEN_ID")
+	overrideStringSlice(&cfg.AuthorizedGroupIDs, "FEISHU_CODEX_BRIDGE_AUTHORIZED_GROUP_CHAT_IDS")
 	overrideString(&cfg.HTTPAddr, "FEISHU_CODEX_BRIDGE_HTTP_ADDR")
 	overrideString(&cfg.DefaultWorkDir, "FEISHU_CODEX_BRIDGE_DEFAULT_WORK_DIR")
 	overrideString(&cfg.CodexPath, "FEISHU_CODEX_BRIDGE_CODEX_PATH")
@@ -167,10 +169,20 @@ func overrideInt(dst *int, envKey string) {
 	}
 }
 
+func overrideStringSlice(dst *[]string, envKey string) {
+	value := strings.TrimSpace(os.Getenv(envKey))
+	if value == "" {
+		return
+	}
+	parts := strings.Split(value, ",")
+	*dst = normalizeStringSlice(parts)
+}
+
 func (c *Config) normalize(configPath string) {
 	c.AppID = strings.TrimSpace(c.AppID)
 	c.AppSecret = strings.TrimSpace(c.AppSecret)
 	c.AuthorizedOpenID = strings.TrimSpace(c.AuthorizedOpenID)
+	c.AuthorizedGroupIDs = normalizeStringSlice(c.AuthorizedGroupIDs)
 	c.HTTPAddr = strings.TrimSpace(c.HTTPAddr)
 	c.DefaultWorkDir = strings.TrimSpace(c.DefaultWorkDir)
 	c.CodexPath = strings.TrimSpace(c.CodexPath)
@@ -221,6 +233,24 @@ func parseDuration(raw string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
+}
+
+func normalizeStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	output := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		output = append(output, value)
+	}
+	if len(output) == 0 {
+		return nil
+	}
+	return output
 }
 
 func (c Config) validate() error {

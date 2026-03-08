@@ -30,6 +30,16 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := sqliteStore.EnsureAuthorizedUser(context.Background(), cfg.AuthorizedOpenID); err != nil {
+		_ = sqliteStore.Close()
+		return nil, err
+	}
+	for _, chatID := range cfg.AuthorizedGroupIDs {
+		if err := sqliteStore.EnsureAuthorizedGroup(context.Background(), chatID); err != nil {
+			_ = sqliteStore.Close()
+			return nil, err
+		}
+	}
 
 	feishuClient := feishu.New(cfg.AppID, cfg.AppSecret)
 	runner := codex.NewRunner(cfg.CodexPath, cfg.DefaultWorkDir, cfg.CodexTimeout)

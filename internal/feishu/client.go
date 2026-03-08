@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -28,13 +30,22 @@ type Client struct {
 
 	getTenantAccessToken func(context.Context, *larkcore.SelfBuiltTenantAccessTokenReq) (*larkcore.TenantAccessTokenResp, error)
 	sendTextToOpenID     func(context.Context, string, string, string) (string, error)
+	sendImageToOpenID    func(context.Context, string, string, string) (string, error)
 	replyText            func(context.Context, string, string, string) (string, error)
+	replyImage           func(context.Context, string, string, string) (string, error)
 	addReaction          func(context.Context, string, string, string) (string, error)
 	deleteReaction       func(context.Context, string, string, string) error
+	uploadImage          func(context.Context, string, string) (string, error)
+	downloadMessageImage func(context.Context, string, string, string) (messageImage, error)
 
 	mu                        sync.Mutex
 	tenantAccessToken         string
 	tenantAccessTokenExpireAt time.Time
+}
+
+type messageImage struct {
+	FileName string
+	Data     []byte
 }
 
 func New(appID string, appSecret string) *Client {
@@ -83,6 +94,69 @@ func New(appID string, appSecret string) *Client {
 		}
 		return value(resp.Data.MessageId), nil
 	}
+	client.uploadImage = func(ctx context.Context, imagePath string, tenantAccessToken string) (string, error) {
+		body, err := larkim.NewCreateImagePathReqBodyBuilder().
+			ImageType("message").
+			ImagePath(imagePath).
+			Build()
+		if err != nil {
+			return "", fmt.Errorf("build create image body: %w", err)
+		}
+		resp, err := sdk.Im.V1.Image.Create(ctx, larkim.NewCreateImageReqBuilder().
+			Body(body).
+			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return "", fmt.Errorf("upload image: %w", err)
+		}
+		if !resp.Success() {
+			return "", newAPIError("upload image", resp.Code, resp.Msg, resp.RequestId())
+		}
+		return value(resp.Data.ImageKey), nil
+	}
+	client.sendImageToOpenID = func(ctx context.Context, openID string, imagePath string, tenantAccessToken string) (string, error) {
+		imageKey, err := client.uploadImage(ctx, imagePath, tenantAccessToken)
+		if err != nil {
+			return "", err
+		}
+		resp, err := sdk.Im.V1.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
+			ReceiveIdType("open_id").
+			Body(larkim.NewCreateMessageReqBodyBuilder().
+				ReceiveId(openID).
+				MsgType("image").
+				Content(fmt.Sprintf("{\"image_key\":%q}", imageKey)).
+				Uuid(randomUUID()).
+				Build()).
+			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return "", fmt.Errorf("create image message: %w", err)
+		}
+		if !resp.Success() {
+			return "", newAPIError("create image message", resp.Code, resp.Msg, resp.RequestId())
+		}
+		return value(resp.Data.MessageId), nil
+	}
+	client.replyImage = func(ctx context.Context, messageID string, imagePath string, tenantAccessToken string) (string, error) {
+		imageKey, err := client.uploadImage(ctx, imagePath, tenantAccessToken)
+		if err != nil {
+			return "", err
+		}
+		resp, err := sdk.Im.V1.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
+			MessageId(messageID).
+			Body(larkim.NewReplyMessageReqBodyBuilder().
+				MsgType("image").
+				Content(fmt.Sprintf("{\"image_key\":%q}", imageKey)).
+				ReplyInThread(false).
+				Uuid(randomUUID()).
+				Build()).
+			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return "", fmt.Errorf("reply image message: %w", err)
+		}
+		if !resp.Success() {
+			return "", newAPIError("reply image message", resp.Code, resp.Msg, resp.RequestId())
+		}
+		return value(resp.Data.MessageId), nil
+	}
 	client.addReaction = func(ctx context.Context, messageID string, emojiType string, tenantAccessToken string) (string, error) {
 		resp, err := sdk.Im.V1.MessageReaction.Create(ctx, larkim.NewCreateMessageReactionReqBuilder().
 			MessageId(messageID).
@@ -113,6 +187,24 @@ func New(appID string, appSecret string) *Client {
 		}
 		return nil
 	}
+	client.downloadMessageImage = func(ctx context.Context, messageID string, imageKey string, tenantAccessToken string) (messageImage, error) {
+		resp, err := sdk.Im.V1.MessageResource.Get(ctx, larkim.NewGetMessageResourceReqBuilder().
+			MessageId(messageID).
+			FileKey(imageKey).
+			Type("image").
+			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return messageImage{}, fmt.Errorf("download message image: %w", err)
+		}
+		if !resp.Success() && resp.File == nil {
+			return messageImage{}, newAPIError("download message image", resp.Code, resp.Msg, resp.RequestId())
+		}
+		data, err := io.ReadAll(resp.File)
+		if err != nil {
+			return messageImage{}, fmt.Errorf("read message image: %w", err)
+		}
+		return messageImage{FileName: resp.FileName, Data: data}, nil
+	}
 	return client
 }
 
@@ -128,6 +220,18 @@ func (c *Client) ReplyText(ctx context.Context, messageID string, text string) (
 	})
 }
 
+func (c *Client) SendImageToOpenID(ctx context.Context, openID string, imagePath string) (string, error) {
+	return withTenantAccessToken(ctx, c, func(token string) (string, error) {
+		return c.sendImageToOpenID(ctx, openID, imagePath, token)
+	})
+}
+
+func (c *Client) ReplyImage(ctx context.Context, messageID string, imagePath string) (string, error) {
+	return withTenantAccessToken(ctx, c, func(token string) (string, error) {
+		return c.replyImage(ctx, messageID, imagePath, token)
+	})
+}
+
 func (c *Client) AddReaction(ctx context.Context, messageID string, emojiType string) (string, error) {
 	return withTenantAccessToken(ctx, c, func(token string) (string, error) {
 		return c.addReaction(ctx, messageID, emojiType, token)
@@ -139,6 +243,23 @@ func (c *Client) DeleteReaction(ctx context.Context, messageID string, reactionI
 		return struct{}{}, c.deleteReaction(ctx, messageID, reactionID, token)
 	})
 	return err
+}
+
+func (c *Client) DownloadMessageImageToPath(ctx context.Context, messageID string, imageKey string, destPath string) error {
+	image, err := c.DownloadMessageImage(ctx, messageID, imageKey)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(destPath, image.Data, 0o644); err != nil {
+		return fmt.Errorf("write message image: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) DownloadMessageImage(ctx context.Context, messageID string, imageKey string) (messageImage, error) {
+	return withTenantAccessToken(ctx, c, func(token string) (messageImage, error) {
+		return c.downloadMessageImage(ctx, messageID, imageKey, token)
+	})
 }
 
 func withTenantAccessToken[T any](ctx context.Context, c *Client, call func(token string) (T, error)) (T, error) {

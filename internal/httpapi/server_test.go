@@ -25,8 +25,20 @@ func (fakeService) RecentConversations(context.Context, int) ([]store.Conversati
 	}, nil
 }
 
-func (fakeService) SendBoundMessage(context.Context, string) (string, error) {
-	return "om_123", nil
+func (fakeService) SendBoundMessage(context.Context, string, []string) ([]string, error) {
+	return []string{"om_123"}, nil
+}
+
+func (fakeService) ListPendingPairingRequests(context.Context) ([]store.PairingRequest, error) {
+	return []store.PairingRequest{{OpenID: "ou_123", Status: "pending", RequestedAt: time.Now().UTC()}}, nil
+}
+
+func (fakeService) ApprovePairingRequest(context.Context, string) error {
+	return nil
+}
+
+func (fakeService) RejectPairingRequest(context.Context, string) error {
+	return nil
 }
 
 func TestStatusEndpoint(t *testing.T) {
@@ -63,5 +75,34 @@ func TestSendMessageEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"message_id":"om_123"`) {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestListPairingRequestsEndpoint(t *testing.T) {
+	server := New("127.0.0.1:0", time.Second, time.Second, fakeService{})
+	handler := server.httpServer.Handler
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/pairing/requests", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"open_id":"ou_123"`) {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestApprovePairingRequestEndpoint(t *testing.T) {
+	server := New("127.0.0.1:0", time.Second, time.Second, fakeService{})
+	handler := server.httpServer.Handler
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/pairing/requests/ou_123/approve", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: %d body=%s", rec.Code, rec.Body.String())
 	}
 }

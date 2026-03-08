@@ -20,6 +20,13 @@ func TestBuildIncludesHistoryAndUserText(t *testing.T) {
 			Content:   "done",
 			CreatedAt: time.Unix(1700000300, 0).UTC(),
 		},
+		{
+			Source:      "user",
+			Content:     "[image]",
+			ContentType: "image",
+			FilePath:    "/tmp/input.png",
+			CreatedAt:   time.Unix(1700000600, 0).UTC(),
+		},
 	}
 
 	output := Build("/tmp/work", history, "please help")
@@ -28,6 +35,7 @@ func TestBuildIncludesHistoryAndUserText(t *testing.T) {
 		"/tmp/work",
 		"user: hello world",
 		"assistant: done",
+		"user: [image] /tmp/input.png",
 		"Current user message:\nplease help",
 	} {
 		if !strings.Contains(output, expected) {

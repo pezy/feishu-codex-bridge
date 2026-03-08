@@ -1,6 +1,7 @@
 app_id: "cli_replace_me"
 app_secret: "replace_me"
 authorized_open_id: "ou_replace_me"
+authorized_group_chat_ids: []
 http_addr: "127.0.0.1:8787"
 default_work_dir: "/absolute/path/to/workdir"
 codex_path: "codex"

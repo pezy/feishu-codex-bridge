@@ -20,7 +20,8 @@ func Build(workDir string, history []store.ConversationEntry, userText string) s
 	builder.WriteString("- Assume the working directory is ")
 	builder.WriteString(workDir)
 	builder.WriteString(".\n")
-	builder.WriteString("- Return plain message text only.\n")
+	builder.WriteString("- Return plain message text only unless you need to send images.\n")
+	builder.WriteString("- To send an image, put one marker per line using the exact format [[image:/absolute/path/to/file.png]].\n")
 	builder.WriteString("- Do not mention internal bridge implementation, background services, secrets, or tokens.\n")
 	builder.WriteString("\nRecent conversation:\n")
 
@@ -47,6 +48,9 @@ func Build(workDir string, history []store.ConversationEntry, userText string) s
 
 func formatEntry(entry store.ConversationEntry) string {
 	ts := entry.CreatedAt.Format(time.RFC3339)
+	if entry.ContentType == "image" {
+		return fmt.Sprintf("[%s] %s: [image] %s", ts, entry.Source, sanitize(entry.FilePath))
+	}
 	return fmt.Sprintf("[%s] %s: %s", ts, entry.Source, sanitize(entry.Content))
 }
 

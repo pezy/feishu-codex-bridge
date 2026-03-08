@@ -1,20 +1,22 @@
 # Feishu Codex Bridge
 
-把飞书私聊消息直接桥接到本机 Codex 的轻量服务。
+把飞书消息直接桥接到本机 Codex 的轻量服务。
 
 适合一个人长期在 macOS 上使用：在飞书里给机器人发消息，本机收到后调用 `codex` 执行，再把结果回发到飞书。
 
 ## 项目作用
 
-- 通过飞书机器人接收 1:1 私聊文本消息
+- 通过飞书机器人接收单聊消息和群聊 `@` 文本消息
 - 调用本机 `codex -a never exec`
 - 在执行期间给原消息添加 `Typing` reaction
-- 把最终结果回复到原消息
+- 把最终文本或图片结果回复到原消息
 - 提供仅限本机访问的 HTTP API，方便其他本地工具复用
 
 ## 主要特性
 
-- 单用户白名单控制，只处理指定 `authorized_open_id`
+- 单聊支持动态配对，保留 `authorized_open_id` 作为初始授权用户
+- 群聊权限自动获取，`authorized_group_chat_ids` 仅作为启动导入种子
+- 单聊支持收图、发图
 - 自动记录消息、执行结果和最近会话上下文
 - 支持 `launchd` 常驻运行
 - 默认监听 `127.0.0.1:8787`
@@ -33,6 +35,7 @@
 - `app_id`
 - `app_secret`
 - `authorized_open_id`
+- 如需预置历史群权限，可设置 `authorized_group_chat_ids`
 - 如需覆盖默认表情，可设置 `ack_reaction_type`
 
 建议先复制样例：
@@ -44,6 +47,27 @@ cp ./config/config.example.yaml \
 ```
 
 然后填写真实值。
+
+### 1.1 消息规则
+
+- 单聊：
+  - 已授权用户可发送文本和图片
+  - 未授权用户发送 `/pair` 可发起配对申请，并收到一条 server 主机侧 `curl` 命令
+- 群聊：
+  - bot 被拉入群后会自动获得该群权限
+  - 首次收到未知群的 `@` 文本时也会自动补录该群权限
+  - 只响应明确 `@` 机器人的文本消息
+  - v1 不接收群聊图片
+
+### 1.2 Codex 发图约定
+
+如果希望桥接层把本机图片发回飞书，Codex 需要在最终输出里使用显式路径标记，每行一个：
+
+```text
+[[image:/absolute/path/to/file.png]]
+```
+
+桥接层会剥离这些标记行，把剩余文本作为文本回复，再按顺序发送图片。
 
 ### 2. 本地运行
 
@@ -87,6 +111,18 @@ cd /path/to/feishu-codex-bridge
 - `GET /v1/status`
 - `POST /v1/messages/send`
 - `GET /v1/conversations/recent?limit=N`
+- `GET /v1/pairing/requests`
+- `POST /v1/pairing/requests/{open_id}/approve`
+- `POST /v1/pairing/requests/{open_id}/reject`
+
+`POST /v1/messages/send` 请求示例：
+
+```json
+{
+  "text": "hello from codex",
+  "image_paths": ["/absolute/path/to/file.png"]
+}
+```
 
 默认监听：
 
@@ -119,7 +155,17 @@ cd /path/to/feishu-codex-bridge
 
 检查飞书开放平台是否已开启消息事件订阅，并发布包含相关权限的版本。
 
-### 3. 能收消息但无法执行 Codex
+如果是群聊场景，再检查是否明确 `@` 了机器人。
+
+### 3. 收到 `/pair` 但仍无法使用
+
+检查：
+
+- 该配对申请是否已通过本机 API 批准
+- `GET /v1/pairing/requests` 是否仍显示为 pending
+- 回复里的 `curl` 是否在 server 主机上执行成功
+
+### 4. 能收消息但无法执行 Codex
 
 检查：
 
