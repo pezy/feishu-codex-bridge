@@ -1,34 +1,28 @@
 # Feishu Codex Bridge
 
-这是一个运行在 macOS 上的本地飞书长连接桥接服务。
+把飞书私聊消息直接桥接到本机 Codex 的轻量服务。
 
-## 目标
+适合一个人长期在 macOS 上使用：在飞书里给机器人发消息，本机收到后调用 `codex` 执行，再把结果回发到飞书。
 
-- 通过飞书机器人接收你的 1:1 私聊文本消息
-- 默认使用 `$HOME/Service` 调用本机 `codex -a never exec`
-- 先给原消息添加一个 `Typing` reaction，并在最终回复后移除
-- 在 Codex 完成后把最终结果回发到飞书
-- 暴露仅限 `127.0.0.1` 的本地 API，供 `$feishu-bridge` skill 调用
+## 项目作用
 
-## 为什么不用 Docker Compose
+- 通过飞书机器人接收 1:1 私聊文本消息
+- 调用本机 `codex -a never exec`
+- 在执行期间给原消息添加 `Typing` reaction
+- 把最终结果回复到原消息
+- 提供仅限本机访问的 HTTP API，方便其他本地工具复用
 
-v1 明确不以 `docker compose` 作为正式部署形态。
+## 主要特性
 
-原因：
+- 单用户白名单控制，只处理指定 `authorized_open_id`
+- 自动记录消息、执行结果和最近会话上下文
+- 支持 `launchd` 常驻运行
+- 默认监听 `127.0.0.1:8787`
+- 默认工作目录为 `$HOME/Service`
 
-- 这是单用户、本机、macOS 常驻服务，`launchd` 和系统登录态天然匹配
-- 服务需要直接调用本机 `codex` CLI，本地路径和用户环境比容器更自然
-- 长连接服务更需要开机自启和崩溃拉起，`launchd` 成本更低
+## 快速开始
 
-## 目录
-
-- `cmd/feishu-codex-bridge`：程序入口
-- `internal/`：桥接服务内部实现
-- `config/config.example.yaml`：配置样例
-- `launchd/`：LaunchAgent 模板
-- `scripts/`：构建、运行、安装 launchd
-
-## 配置
+### 1. 准备配置
 
 默认配置路径：
 
@@ -51,7 +45,7 @@ cp ./config/config.example.yaml \
 
 然后填写真实值。
 
-## 本地运行
+### 2. 本地运行
 
 ```bash
 cd /path/to/feishu-codex-bridge
@@ -67,7 +61,7 @@ cd /path/to/feishu-codex-bridge
 go run ./cmd/feishu-codex-bridge
 ```
 
-## launchd 安装
+### 3. 配置常驻运行
 
 ```bash
 cd /path/to/feishu-codex-bridge
@@ -102,6 +96,14 @@ cd /path/to/feishu-codex-bridge
 
 - SQLite：`~/Library/Application Support/feishu-codex-bridge/bridge.db`
 - 日志：`~/Library/Logs/feishu-codex-bridge/`
+
+## 仓库结构
+
+- `cmd/feishu-codex-bridge`：程序入口
+- `internal/`：核心实现
+- `config/config.example.yaml`：配置样例
+- `launchd/`：LaunchAgent 模板
+- `scripts/`：构建、运行、安装脚本
 
 ## 常见问题
 
