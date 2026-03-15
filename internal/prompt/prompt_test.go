@@ -43,3 +43,21 @@ func TestBuildIncludesHistoryAndUserText(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCondensesFailureLogsInHistory(t *testing.T) {
+	history := []store.ConversationEntry{
+		{
+			Source:    "assistant",
+			Content:   "Codex 执行失败：\nOpenAI Codex v0.98.0\nsession id: abc\nError: boom",
+			CreatedAt: time.Unix(1700000000, 0).UTC(),
+		},
+	}
+
+	output := Build("/tmp/work", history, "继续")
+	if !strings.Contains(output, "上一轮执行失败（详细日志已省略）。") {
+		t.Fatalf("output missing condensed failure text:\n%s", output)
+	}
+	if strings.Contains(output, "OpenAI Codex v0.98.0") || strings.Contains(output, "session id: abc") {
+		t.Fatalf("output should not include raw failure logs:\n%s", output)
+	}
+}

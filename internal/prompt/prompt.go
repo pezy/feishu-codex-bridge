@@ -9,6 +9,7 @@ import (
 )
 
 const maxHistoryEntries = 12
+const maxEntryChars = 600
 
 func Build(workDir string, history []store.ConversationEntry, userText string) string {
 	var builder strings.Builder
@@ -33,7 +34,7 @@ func Build(workDir string, history []store.ConversationEntry, userText string) s
 			start = len(history) - maxHistoryEntries
 		}
 		for _, entry := range history[start:] {
-			builder.WriteString(formatEntry(entry))
+			builder.WriteString(formatEntry(normalizeEntry(entry)))
 			builder.WriteByte('\n')
 		}
 	}
@@ -46,12 +47,30 @@ func Build(workDir string, history []store.ConversationEntry, userText string) s
 	return builder.String()
 }
 
+func normalizeEntry(entry store.ConversationEntry) store.ConversationEntry {
+	if entry.ContentType == "image" {
+		entry.FilePath = sanitize(entry.FilePath)
+		return entry
+	}
+
+	content := sanitize(entry.Content)
+	if strings.HasPrefix(content, "Codex 执行失败：") {
+		entry.Content = "上一轮执行失败（详细日志已省略）。"
+		return entry
+	}
+	if len(content) > maxEntryChars {
+		content = content[:maxEntryChars] + " …[truncated]"
+	}
+	entry.Content = content
+	return entry
+}
+
 func formatEntry(entry store.ConversationEntry) string {
 	ts := entry.CreatedAt.Format(time.RFC3339)
 	if entry.ContentType == "image" {
-		return fmt.Sprintf("[%s] %s: [image] %s", ts, entry.Source, sanitize(entry.FilePath))
+		return fmt.Sprintf("[%s] %s: [image] %s", ts, entry.Source, entry.FilePath)
 	}
-	return fmt.Sprintf("[%s] %s: %s", ts, entry.Source, sanitize(entry.Content))
+	return fmt.Sprintf("[%s] %s: %s", ts, entry.Source, entry.Content)
 }
 
 func sanitize(input string) string {
