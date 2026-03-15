@@ -13,6 +13,8 @@ const maxEntryChars = 600
 
 func Build(workDir string, history []store.ConversationEntry, userText string) string {
 	var builder strings.Builder
+	workDir = sanitize(workDir)
+	userText = sanitize(userText)
 
 	builder.WriteString("You are Codex replying through a Feishu bridge on macOS.\n")
 	builder.WriteString("Rules:\n")
@@ -44,7 +46,7 @@ func Build(workDir string, history []store.ConversationEntry, userText string) s
 	builder.WriteString("\n")
 	builder.WriteString("\nWrite the final reply now.")
 
-	return builder.String()
+	return strings.ToValidUTF8(builder.String(), "�")
 }
 
 func normalizeEntry(entry store.ConversationEntry) store.ConversationEntry {
@@ -74,6 +76,7 @@ func formatEntry(entry store.ConversationEntry) string {
 }
 
 func sanitize(input string) string {
+	input = strings.ToValidUTF8(input, "�")
 	input = strings.ReplaceAll(input, "\r\n", "\n")
 	input = strings.ReplaceAll(input, "\n", " ")
 	return strings.TrimSpace(input)

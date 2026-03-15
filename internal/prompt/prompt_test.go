@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pezy/feishu-codex-bridge/internal/store"
 )
@@ -59,5 +60,23 @@ func TestBuildCondensesFailureLogsInHistory(t *testing.T) {
 	}
 	if strings.Contains(output, "OpenAI Codex v0.98.0") || strings.Contains(output, "session id: abc") {
 		t.Fatalf("output should not include raw failure logs:\n%s", output)
+	}
+}
+
+func TestBuildSanitizesInvalidUTF8(t *testing.T) {
+	history := []store.ConversationEntry{
+		{
+			Source:    "user",
+			Content:   "bad" + string([]byte{0xff}) + "history",
+			CreatedAt: time.Unix(1700000000, 0).UTC(),
+		},
+	}
+
+	output := Build("/tmp/"+string([]byte{0xff})+"work", history, "hi"+string([]byte{0xff}))
+	if strings.Contains(output, string([]byte{0xff})) {
+		t.Fatalf("output contains invalid utf8 byte: %q", output)
+	}
+	if !utf8.ValidString(output) {
+		t.Fatalf("output should be valid utf8: %q", output)
 	}
 }
