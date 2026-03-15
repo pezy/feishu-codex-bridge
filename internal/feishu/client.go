@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	larkdocx "github.com/larksuite/oapi-sdk-go/v3/service/docx/v1"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	larkwiki "github.com/larksuite/oapi-sdk-go/v3/service/wiki/v2"
 )
 
 const tenantAccessTokenExpiryDelta = 3 * time.Minute
@@ -37,6 +41,7 @@ type Client struct {
 	deleteReaction       func(context.Context, string, string, string) error
 	uploadImage          func(context.Context, string, string) (string, error)
 	downloadMessageImage func(context.Context, string, string, string) (messageImage, error)
+	writeWikiMarkdown    func(context.Context, string, string, string) error
 
 	mu                        sync.Mutex
 	tenantAccessToken         string
@@ -205,6 +210,13 @@ func New(appID string, appSecret string) *Client {
 		}
 		return messageImage{FileName: resp.FileName, Data: data}, nil
 	}
+	client.writeWikiMarkdown = func(ctx context.Context, wikiURL string, markdown string, tenantAccessToken string) error {
+		documentID, err := resolveWikiDocumentID(ctx, sdk, wikiURL, tenantAccessToken)
+		if err != nil {
+			return err
+		}
+		return replaceDocumentMarkdown(ctx, sdk, documentID, markdown, tenantAccessToken)
+	}
 	return client
 }
 
@@ -260,6 +272,13 @@ func (c *Client) DownloadMessageImage(ctx context.Context, messageID string, ima
 	return withTenantAccessToken(ctx, c, func(token string) (messageImage, error) {
 		return c.downloadMessageImage(ctx, messageID, imageKey, token)
 	})
+}
+
+func (c *Client) WriteWikiMarkdown(ctx context.Context, wikiURL string, markdown string) error {
+	_, err := withTenantAccessToken(ctx, c, func(token string) (struct{}, error) {
+		return struct{}{}, c.writeWikiMarkdown(ctx, wikiURL, markdown, token)
+	})
+	return err
 }
 
 func withTenantAccessToken[T any](ctx context.Context, c *Client, call func(token string) (T, error)) (T, error) {
@@ -366,6 +385,111 @@ func value(input *string) string {
 		return ""
 	}
 	return *input
+}
+
+func resolveWikiDocumentID(ctx context.Context, sdk *lark.Client, wikiURL string, tenantAccessToken string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(wikiURL))
+	if err != nil {
+		return "", fmt.Errorf("parse wiki url: %w", err)
+	}
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := 0; i < len(segments)-1; i++ {
+		switch segments[i] {
+		case "docx":
+			return segments[i+1], nil
+		case "wiki":
+			resp, err := sdk.Wiki.V2.Space.GetNode(ctx, larkwiki.NewGetNodeSpaceReqBuilder().
+				Token(segments[i+1]).
+				ObjType(larkwiki.ObjTypeForQueryObjTypeWiki).
+				Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+			if err != nil {
+				return "", fmt.Errorf("get wiki node: %w", err)
+			}
+			if !resp.Success() {
+				return "", newAPIError("get wiki node", resp.Code, resp.Msg, resp.RequestId())
+			}
+			if resp.Data == nil || resp.Data.Node == nil {
+				return "", errors.New("get wiki node: empty node")
+			}
+			if value(resp.Data.Node.ObjType) != larkwiki.ObjTypeForQueryObjTypeDocx {
+				return "", fmt.Errorf("unsupported wiki node obj_type: %s", value(resp.Data.Node.ObjType))
+			}
+			documentID := value(resp.Data.Node.ObjToken)
+			if documentID == "" {
+				return "", errors.New("get wiki node: empty obj_token")
+			}
+			return documentID, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported wiki url: %s", wikiURL)
+}
+
+func replaceDocumentMarkdown(ctx context.Context, sdk *lark.Client, documentID string, markdown string, tenantAccessToken string) error {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return errors.New("markdown is required")
+	}
+
+	convertResp, err := sdk.Docx.V1.Document.Convert(ctx, larkdocx.NewConvertDocumentReqBuilder().
+		Body(larkdocx.NewConvertDocumentReqBodyBuilder().
+			ContentType(larkdocx.ContentTypeMarkdown).
+			Content(markdown).
+			Build()).
+		Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+	if err != nil {
+		return fmt.Errorf("convert markdown: %w", err)
+	}
+	if !convertResp.Success() {
+		return newAPIError("convert markdown", convertResp.Code, convertResp.Msg, convertResp.RequestId())
+	}
+
+	childrenResp, err := sdk.Docx.V1.DocumentBlockChildren.Get(ctx, larkdocx.NewGetDocumentBlockChildrenReqBuilder().
+		DocumentId(documentID).
+		BlockId(documentID).
+		PageSize(500).
+		Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+	if err != nil {
+		return fmt.Errorf("get document root children: %w", err)
+	}
+	if !childrenResp.Success() {
+		return newAPIError("get document root children", childrenResp.Code, childrenResp.Msg, childrenResp.RequestId())
+	}
+	if childrenResp.Data != nil && len(childrenResp.Data.Items) > 0 {
+		deleteResp, err := sdk.Docx.V1.DocumentBlockChildren.BatchDelete(ctx, larkdocx.NewBatchDeleteDocumentBlockChildrenReqBuilder().
+			DocumentId(documentID).
+			BlockId(documentID).
+			Body(larkdocx.NewBatchDeleteDocumentBlockChildrenReqBodyBuilder().
+				StartIndex(0).
+				EndIndex(len(childrenResp.Data.Items)).
+				Build()).
+			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return fmt.Errorf("delete document root children: %w", err)
+		}
+		if !deleteResp.Success() {
+			return newAPIError("delete document root children", deleteResp.Code, deleteResp.Msg, deleteResp.RequestId())
+		}
+	}
+
+	blocks := convertResp.Data.Blocks
+	if len(blocks) == 0 {
+		return nil
+	}
+	createResp, err := sdk.Docx.V1.DocumentBlockChildren.Create(ctx, larkdocx.NewCreateDocumentBlockChildrenReqBuilder().
+		DocumentId(documentID).
+		BlockId(documentID).
+		Body(larkdocx.NewCreateDocumentBlockChildrenReqBodyBuilder().
+			Children(blocks).
+			Index(0).
+			Build()).
+		Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+	if err != nil {
+		return fmt.Errorf("create document root children: %w", err)
+	}
+	if !createResp.Success() {
+		return newAPIError("create document root children", createResp.Code, createResp.Msg, createResp.RequestId())
+	}
+	return nil
 }
 
 func randomUUID() string {

@@ -92,6 +92,22 @@ func TestParseResponsePayload(t *testing.T) {
 	}
 }
 
+func TestParseResponsePayloadWithWikiWrite(t *testing.T) {
+	payload := parseResponsePayload("done\n[[wiki-write:https://example.feishu.cn/wiki/abc]]\n# title\nbody\n[[/wiki-write]]")
+	if payload.Text != "done" {
+		t.Fatalf("unexpected text: %q", payload.Text)
+	}
+	if len(payload.WikiWrites) != 1 {
+		t.Fatalf("unexpected wiki writes: %#v", payload.WikiWrites)
+	}
+	if payload.WikiWrites[0].URL != "https://example.feishu.cn/wiki/abc" {
+		t.Fatalf("unexpected wiki url: %#v", payload.WikiWrites[0])
+	}
+	if payload.WikiWrites[0].Markdown != "# title\nbody" {
+		t.Fatalf("unexpected wiki markdown: %#v", payload.WikiWrites[0])
+	}
+}
+
 func TestPairingApprovalReplyText(t *testing.T) {
 	got := pairingApprovalReplyText("127.0.0.1:8787", "ou_123")
 	want := "配对申请已收到。请在 server 主机执行以下命令完成授权：\ncurl -X POST http://127.0.0.1:8787/v1/pairing/requests/ou_123/approve"

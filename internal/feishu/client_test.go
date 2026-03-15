@@ -102,3 +102,61 @@ func TestTenantAccessTokenTTLUsesSafetyWindow(t *testing.T) {
 		t.Fatalf("unexpected short ttl: %s", ttl)
 	}
 }
+
+func TestWriteWikiMarkdownReusesCachedTenantToken(t *testing.T) {
+	now := time.Unix(300, 0)
+	tokenFetches := 0
+	callTokens := make([]string, 0, 2)
+
+	client := &Client{
+		appID:     "cli_xxx",
+		appSecret: "secret_xxx",
+		now:       func() time.Time { return now },
+		getTenantAccessToken: func(ctx context.Context, req *larkcore.SelfBuiltTenantAccessTokenReq) (*larkcore.TenantAccessTokenResp, error) {
+			tokenFetches++
+			return &larkcore.TenantAccessTokenResp{
+				ApiResp: &larkcore.ApiResp{},
+				CodeError: larkcore.CodeError{
+					Code: 0,
+				},
+				Expire:            7200,
+				TenantAccessToken: "cached-token",
+			}, nil
+		},
+		writeWikiMarkdown: func(ctx context.Context, wikiURL string, markdown string, tenantAccessToken string) error {
+			callTokens = append(callTokens, tenantAccessToken)
+			if wikiURL == "" || markdown == "" {
+				t.Fatalf("unexpected empty input")
+			}
+			return nil
+		},
+	}
+
+	if err := client.WriteWikiMarkdown(context.Background(), "https://example.feishu.cn/wiki/abc", "# title"); err != nil {
+		t.Fatalf("WriteWikiMarkdown: %v", err)
+	}
+
+	if tokenFetches != 1 {
+		t.Fatalf("unexpected token fetches: %d", tokenFetches)
+	}
+	if len(callTokens) != 1 || callTokens[0] != "cached-token" {
+		t.Fatalf("unexpected call tokens: %#v", callTokens)
+	}
+}
+
+func TestResolveWikiDocumentIDFromDocxURL(t *testing.T) {
+	documentID, err := resolveWikiDocumentID(context.Background(), nil, "https://example.feishu.cn/docx/AbCdEf123?from=wiki", "tenant-token")
+	if err != nil {
+		t.Fatalf("resolveWikiDocumentID: %v", err)
+	}
+	if documentID != "AbCdEf123" {
+		t.Fatalf("unexpected document id: %s", documentID)
+	}
+}
+
+func TestResolveWikiDocumentIDRejectsUnsupportedURL(t *testing.T) {
+	_, err := resolveWikiDocumentID(context.Background(), nil, "https://example.feishu.cn/base/AbCdEf123", "tenant-token")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}

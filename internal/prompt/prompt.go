@@ -25,6 +25,11 @@ func Build(workDir string, history []store.ConversationEntry, userText string) s
 	builder.WriteString(".\n")
 	builder.WriteString("- Return plain message text only unless you need to send images.\n")
 	builder.WriteString("- To send an image, put one marker per line using the exact format [[image:/absolute/path/to/file.png]].\n")
+	builder.WriteString("- If you need to write content into a Feishu Wiki page, output a block exactly like:\n")
+	builder.WriteString("  [[wiki-write:https://example.feishu.cn/wiki/xxxx]]\n")
+	builder.WriteString("  <markdown content to write>\n")
+	builder.WriteString("  [[/wiki-write]]\n")
+	builder.WriteString("  Any plain text outside that block will be sent as the chat reply.\n")
 	builder.WriteString("- Do not mention internal bridge implementation, background services, secrets, or tokens.\n")
 	builder.WriteString("\nRecent conversation:\n")
 

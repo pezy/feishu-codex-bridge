@@ -28,8 +28,11 @@ const (
 	pairingCommand               = "/pair"
 	noReplyFallback              = "任务已执行，但没有可发送的回复。请查看本机日志。"
 	groupImageUnsupportedMessage = "已生成图片，但当前群聊回复仅支持文本。"
+	wikiWriteSuccessMessage      = "已写入飞书 Wiki 页面。"
 	imageMarkerPrefix            = "[[image:"
 	imageMarkerSuffix            = "]]"
+	wikiWriteBeginPrefix         = "[[wiki-write:"
+	wikiWriteEndMarker           = "[[/wiki-write]]"
 )
 
 type Status struct {
@@ -85,6 +88,12 @@ type incomingMessage struct {
 type responsePayload struct {
 	Text       string
 	ImagePaths []string
+	WikiWrites []wikiWriteAction
+}
+
+type wikiWriteAction struct {
+	URL      string
+	Markdown string
 }
 
 func New(cfg config.Config, sqliteStore *store.SQLiteStore, feishuClient *feishu.Client, runner *codex.Runner) *Service {
@@ -460,6 +469,23 @@ func (s *Service) downloadIncomingImage(ctx context.Context, incoming *incomingM
 func (s *Service) replyPayload(ctx context.Context, incoming *incomingMessage, payload responsePayload, createdAt time.Time) ([]string, []error) {
 	var messageIDs []string
 	var errs []error
+	successfulWikiWrites := 0
+
+	for _, action := range payload.WikiWrites {
+		if strings.TrimSpace(action.URL) == "" || strings.TrimSpace(action.Markdown) == "" {
+			continue
+		}
+		if err := s.feishu.WriteWikiMarkdown(ctx, action.URL, action.Markdown); err != nil {
+			log.Printf("write wiki failed: %v", err)
+			errs = append(errs, err)
+			continue
+		}
+		successfulWikiWrites++
+	}
+
+	if payload.Text == "" && successfulWikiWrites > 0 {
+		payload.Text = wikiWriteSuccessMessage
+	}
 
 	if payload.Text != "" {
 		id, err := s.replyWithRetry(ctx, incoming.MessageID, payload.Text)
@@ -643,8 +669,42 @@ func parseResponsePayload(output string) responsePayload {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	textLines := make([]string, 0, len(lines))
 	imagePaths := make([]string, 0)
+	wikiWrites := make([]wikiWriteAction, 0)
+
+	inWikiWrite := false
+	var wikiURL string
+	var wikiMarkdown []string
+
+	flushWikiWrite := func() {
+		if strings.TrimSpace(wikiURL) == "" {
+			wikiURL = ""
+			wikiMarkdown = nil
+			return
+		}
+		wikiWrites = append(wikiWrites, wikiWriteAction{
+			URL:      strings.TrimSpace(wikiURL),
+			Markdown: strings.TrimSpace(strings.Join(wikiMarkdown, "\n")),
+		})
+		wikiURL = ""
+		wikiMarkdown = nil
+	}
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		if inWikiWrite {
+			if trimmed == wikiWriteEndMarker {
+				flushWikiWrite()
+				inWikiWrite = false
+				continue
+			}
+			wikiMarkdown = append(wikiMarkdown, line)
+			continue
+		}
+		if strings.HasPrefix(trimmed, wikiWriteBeginPrefix) && strings.HasSuffix(trimmed, imageMarkerSuffix) {
+			wikiURL = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, wikiWriteBeginPrefix), imageMarkerSuffix))
+			inWikiWrite = true
+			continue
+		}
 		if strings.HasPrefix(trimmed, imageMarkerPrefix) && strings.HasSuffix(trimmed, imageMarkerSuffix) {
 			imagePath := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, imageMarkerPrefix), imageMarkerSuffix))
 			if imagePath != "" {
@@ -654,9 +714,13 @@ func parseResponsePayload(output string) responsePayload {
 		}
 		textLines = append(textLines, line)
 	}
+	if inWikiWrite {
+		flushWikiWrite()
+	}
 	return responsePayload{
 		Text:       strings.TrimSpace(strings.Join(textLines, "\n")),
 		ImagePaths: imagePaths,
+		WikiWrites: wikiWrites,
 	}
 }
 

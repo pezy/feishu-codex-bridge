@@ -69,6 +69,24 @@ cp ./config/config.example.yaml \
 
 桥接层会剥离这些标记行，把剩余文本作为文本回复，再按顺序发送图片。
 
+### 1.3 Codex 直接写飞书 Wiki 约定
+
+如果希望桥接层把 Markdown 直接写入飞书 Wiki / Docx 页面，Codex 需要输出一个显式块：
+
+```text
+[[wiki-write:https://example.feishu.cn/wiki/xxxx]]
+# 标题
+正文
+[[/wiki-write]]
+```
+
+说明：
+
+- 支持 `https://.../wiki/<token>` 和 `https://.../docx/<token>` 链接
+- 桥接层会把块内 Markdown 覆盖写入目标页面
+- 块外普通文本仍会作为聊天回复发送
+- 如果只有写页面动作、没有额外文本，桥接层会默认回复：`已写入飞书 Wiki 页面。`
+
 ### 2. 本地运行
 
 ```bash
@@ -156,6 +174,8 @@ cd /path/to/feishu-codex-bridge
 检查飞书开放平台是否已开启消息事件订阅，并发布包含相关权限的版本。
 
 如果是群聊场景，再检查是否明确 `@` 了机器人。
+
+如果要使用“直接写飞书 Wiki 页面”，还需要确认当前飞书应用版本已开通并发布 Wiki / Docx 读取与编辑文档相关权限。
 
 ### 3. 收到 `/pair` 但仍无法使用
 
