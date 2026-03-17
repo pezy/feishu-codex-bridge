@@ -50,6 +50,8 @@ func TestSQLiteStoreTracksMessagesAndExecutions(t *testing.T) {
 	entry := ConversationEntry{
 		Source:      "user",
 		OpenID:      "ou_123",
+		ChatID:      "oc_123",
+		ChatType:    "p2p",
 		MessageID:   "om_123",
 		Content:     "hello",
 		ContentType: "text",
@@ -84,6 +86,30 @@ func TestSQLiteStoreTracksMessagesAndExecutions(t *testing.T) {
 	}
 	if len(recent) != 1 || recent[0].Content != "hello" {
 		t.Fatalf("unexpected recent conversations: %+v", recent)
+	}
+	if recent[0].ChatID != "oc_123" || recent[0].ChatType != "p2p" {
+		t.Fatalf("unexpected recent conversation chat info: %+v", recent[0])
+	}
+
+	if err := store.AppendConversation(ctx, ConversationEntry{
+		Source:      "user",
+		OpenID:      "ou_456",
+		ChatID:      "oc_group_1",
+		ChatType:    "group",
+		MessageID:   "om_456",
+		Content:     "group hello",
+		ContentType: "text",
+		CreatedAt:   time.Now().UTC().Add(time.Second),
+	}); err != nil {
+		t.Fatalf("AppendConversation group: %v", err)
+	}
+
+	groupRecent, err := store.RecentConversationsByChat(ctx, "oc_group_1", 10)
+	if err != nil {
+		t.Fatalf("RecentConversationsByChat: %v", err)
+	}
+	if len(groupRecent) != 1 || groupRecent[0].Content != "group hello" {
+		t.Fatalf("unexpected group recent conversations: %+v", groupRecent)
 	}
 
 	lastExecution, err := store.LastExecution(ctx)

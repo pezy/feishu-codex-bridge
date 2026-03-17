@@ -6,6 +6,8 @@ type ConversationEntry struct {
 	ID          int64     `json:"id"`
 	Source      string    `json:"source"`
 	OpenID      string    `json:"open_id,omitempty"`
+	ChatID      string    `json:"chat_id,omitempty"`
+	ChatType    string    `json:"chat_type,omitempty"`
 	MessageID   string    `json:"message_id,omitempty"`
 	Content     string    `json:"content"`
 	ContentType string    `json:"content_type,omitempty"`

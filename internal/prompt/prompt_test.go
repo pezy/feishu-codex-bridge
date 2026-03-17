@@ -13,6 +13,7 @@ func TestBuildIncludesHistoryAndUserText(t *testing.T) {
 	history := []store.ConversationEntry{
 		{
 			Source:    "user",
+			OpenID:    "ou_123",
 			Content:   "hello\nworld",
 			CreatedAt: time.Unix(1700000000, 0).UTC(),
 		},
@@ -23,6 +24,7 @@ func TestBuildIncludesHistoryAndUserText(t *testing.T) {
 		},
 		{
 			Source:      "user",
+			OpenID:      "ou_123",
 			Content:     "[image]",
 			ContentType: "image",
 			FilePath:    "/tmp/input.png",
@@ -34,9 +36,9 @@ func TestBuildIncludesHistoryAndUserText(t *testing.T) {
 
 	for _, expected := range []string{
 		"/tmp/work",
-		"user: hello world",
+		"user(ou_123): hello world",
 		"assistant: done",
-		"user: [image] /tmp/input.png",
+		"user(ou_123): [image] /tmp/input.png",
 		"Current user message:\nplease help",
 	} {
 		if !strings.Contains(output, expected) {

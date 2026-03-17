@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS conversation_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source TEXT NOT NULL,
   open_id TEXT,
+  chat_id TEXT NOT NULL DEFAULT '',
+  chat_type TEXT NOT NULL DEFAULT '',
   message_id TEXT,
   content TEXT NOT NULL,
   content_type TEXT NOT NULL DEFAULT 'text',
@@ -120,6 +122,8 @@ func (s *SQLiteStore) migrateSchema() error {
 		{table: "processed_messages", name: "chat_type", definition: "TEXT NOT NULL DEFAULT ''", defaultValue: ""},
 		{table: "processed_messages", name: "message_type", definition: "TEXT NOT NULL DEFAULT ''", defaultValue: ""},
 		{table: "processed_messages", name: "raw_content_json", definition: "TEXT NOT NULL DEFAULT ''", defaultValue: ""},
+		{table: "conversation_entries", name: "chat_id", definition: "TEXT NOT NULL DEFAULT ''", defaultValue: ""},
+		{table: "conversation_entries", name: "chat_type", definition: "TEXT NOT NULL DEFAULT ''", defaultValue: ""},
 		{table: "conversation_entries", name: "content_type", definition: "TEXT NOT NULL DEFAULT 'text'", defaultValue: "text"},
 		{table: "conversation_entries", name: "file_path", definition: "TEXT NOT NULL DEFAULT ''", defaultValue: ""},
 	}
@@ -188,9 +192,9 @@ INSERT INTO processed_messages (
 
 func (s *SQLiteStore) AppendConversation(ctx context.Context, entry ConversationEntry) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO conversation_entries (source, open_id, message_id, content, content_type, file_path, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-`, entry.Source, entry.OpenID, entry.MessageID, entry.Content, normalizeContentType(entry.ContentType), entry.FilePath, entry.CreatedAt.UTC().Format(time.RFC3339Nano))
+INSERT INTO conversation_entries (source, open_id, chat_id, chat_type, message_id, content, content_type, file_path, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, entry.Source, entry.OpenID, entry.ChatID, entry.ChatType, entry.MessageID, entry.Content, normalizeContentType(entry.ContentType), entry.FilePath, entry.CreatedAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("append conversation: %w", err)
 	}
@@ -259,7 +263,7 @@ WHERE message_id = ?
 
 func (s *SQLiteStore) RecentConversations(ctx context.Context, limit int) ([]ConversationEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, source, open_id, message_id, content, content_type, file_path, created_at
+SELECT id, source, open_id, chat_id, chat_type, message_id, content, content_type, file_path, created_at
 FROM conversation_entries
 ORDER BY created_at DESC
 LIMIT ?
@@ -273,7 +277,7 @@ LIMIT ?
 	for rows.Next() {
 		var entry ConversationEntry
 		var createdAt string
-		if err := rows.Scan(&entry.ID, &entry.Source, &entry.OpenID, &entry.MessageID, &entry.Content, &entry.ContentType, &entry.FilePath, &createdAt); err != nil {
+		if err := rows.Scan(&entry.ID, &entry.Source, &entry.OpenID, &entry.ChatID, &entry.ChatType, &entry.MessageID, &entry.Content, &entry.ContentType, &entry.FilePath, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		entry.CreatedAt = parseTimestamp(createdAt)
@@ -281,6 +285,37 @@ LIMIT ?
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate recent conversations: %w", err)
+	}
+
+	reverse(entries)
+	return entries, nil
+}
+
+func (s *SQLiteStore) RecentConversationsByChat(ctx context.Context, chatID string, limit int) ([]ConversationEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, source, open_id, chat_id, chat_type, message_id, content, content_type, file_path, created_at
+FROM conversation_entries
+WHERE chat_id = ?
+ORDER BY created_at DESC
+LIMIT ?
+`, chatID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent conversations by chat: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []ConversationEntry
+	for rows.Next() {
+		var entry ConversationEntry
+		var createdAt string
+		if err := rows.Scan(&entry.ID, &entry.Source, &entry.OpenID, &entry.ChatID, &entry.ChatType, &entry.MessageID, &entry.Content, &entry.ContentType, &entry.FilePath, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan conversation by chat: %w", err)
+		}
+		entry.CreatedAt = parseTimestamp(createdAt)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent conversations by chat: %w", err)
 	}
 
 	reverse(entries)

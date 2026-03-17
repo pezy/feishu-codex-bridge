@@ -151,6 +151,47 @@ func TestAuthorizeAndRemoveGroup(t *testing.T) {
 	}
 }
 
+func TestHandleIncomingGroupTextWithoutMentionRecordsContextOnly(t *testing.T) {
+	sqliteStore, err := store.NewSQLiteStore(t.TempDir() + "/bridge.db")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() {
+		_ = sqliteStore.Close()
+	}()
+
+	service := &Service{
+		store: sqliteStore,
+		cfg: config.Config{
+			RecentContextLimit: 12,
+		},
+	}
+
+	event := buildEvent("group", "text", `{"text":"前情提要"}`, nil)
+	if err := service.HandleIncomingMessage(context.Background(), event); err != nil {
+		t.Fatalf("HandleIncomingMessage: %v", err)
+	}
+
+	history, err := sqliteStore.RecentConversationsByChat(context.Background(), "oc_123", 10)
+	if err != nil {
+		t.Fatalf("RecentConversationsByChat: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected one recorded context entry, got %+v", history)
+	}
+	if history[0].Content != "前情提要" || history[0].ChatType != "group" {
+		t.Fatalf("unexpected recorded entry: %+v", history[0])
+	}
+
+	lastExecution, err := sqliteStore.LastExecution(context.Background())
+	if err != nil {
+		t.Fatalf("LastExecution: %v", err)
+	}
+	if lastExecution != nil {
+		t.Fatalf("expected no execution for passive group context, got %+v", lastExecution)
+	}
+}
+
 func buildEvent(chatType string, messageType string, content string, mentions []*larkim.MentionEvent) *larkim.P2MessageReceiveV1 {
 	return &larkim.P2MessageReceiveV1{
 		Event: &larkim.P2MessageReceiveV1Data{

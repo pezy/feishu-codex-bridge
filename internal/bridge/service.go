@@ -255,6 +255,7 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 	now := time.Now().UTC()
 	s.markEvent(now)
 
+	shouldTrigger := true
 	switch incoming.ChatType {
 	case "p2p":
 		authorized, err := s.store.IsAuthorizedUser(ctx, incoming.SenderOpenID)
@@ -265,9 +266,6 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 			return s.handleUnauthorizedP2P(ctx, incoming)
 		}
 	case "group":
-		if !incoming.HasMentions {
-			return nil
-		}
 		authorized, err := s.store.IsAuthorizedGroup(ctx, incoming.ChatID)
 		if err != nil {
 			return err
@@ -280,6 +278,7 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 		if incoming.MessageType != "text" {
 			return nil
 		}
+		shouldTrigger = incoming.HasMentions
 	default:
 		return nil
 	}
@@ -309,6 +308,12 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 	if err := s.store.AppendConversation(ctx, entry); err != nil {
 		log.Printf("append inbound conversation: %v", err)
 	}
+	if !shouldTrigger {
+		if err := s.store.UpdateMessageState(ctx, incoming.MessageID, "recorded", "", "", "", "", &now); err != nil {
+			log.Printf("update passive context message state: %v", err)
+		}
+		return nil
+	}
 
 	ackReactionID, ackErr := s.feishu.AddReaction(ctx, incoming.MessageID, s.cfg.AckReactionType)
 	if ackErr != nil {
@@ -316,7 +321,7 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 	}
 
 	executionID := randomID("exec")
-	history, err := s.store.RecentConversations(ctx, s.cfg.RecentContextLimit)
+	history, err := s.store.RecentConversationsByChat(ctx, incoming.ChatID, s.cfg.RecentContextLimit)
 	if err != nil {
 		return err
 	}
@@ -427,6 +432,8 @@ func (s *Service) prepareIncomingConversation(ctx context.Context, incoming *inc
 		entry := store.ConversationEntry{
 			Source:      "user",
 			OpenID:      incoming.SenderOpenID,
+			ChatID:      incoming.ChatID,
+			ChatType:    incoming.ChatType,
 			MessageID:   incoming.MessageID,
 			Content:     "[image]",
 			ContentType: "image",
@@ -438,6 +445,8 @@ func (s *Service) prepareIncomingConversation(ctx context.Context, incoming *inc
 		entry := store.ConversationEntry{
 			Source:      "user",
 			OpenID:      incoming.SenderOpenID,
+			ChatID:      incoming.ChatID,
+			ChatType:    incoming.ChatType,
 			MessageID:   incoming.MessageID,
 			Content:     incoming.Text,
 			ContentType: "text",
@@ -497,6 +506,8 @@ func (s *Service) replyPayload(ctx context.Context, incoming *incomingMessage, p
 			if err := s.store.AppendConversation(ctx, store.ConversationEntry{
 				Source:      "assistant",
 				OpenID:      incoming.SenderOpenID,
+				ChatID:      incoming.ChatID,
+				ChatType:    incoming.ChatType,
 				MessageID:   id,
 				Content:     payload.Text,
 				ContentType: "text",
@@ -519,6 +530,8 @@ func (s *Service) replyPayload(ctx context.Context, incoming *incomingMessage, p
 			if err := s.store.AppendConversation(ctx, store.ConversationEntry{
 				Source:      "assistant",
 				OpenID:      incoming.SenderOpenID,
+				ChatID:      incoming.ChatID,
+				ChatType:    incoming.ChatType,
 				MessageID:   id,
 				Content:     "[image]",
 				ContentType: "image",
@@ -554,6 +567,8 @@ func (s *Service) replyPayload(ctx context.Context, incoming *incomingMessage, p
 	if err := s.store.AppendConversation(ctx, store.ConversationEntry{
 		Source:      "assistant",
 		OpenID:      incoming.SenderOpenID,
+		ChatID:      incoming.ChatID,
+		ChatType:    incoming.ChatType,
 		MessageID:   id,
 		Content:     fallback,
 		ContentType: "text",

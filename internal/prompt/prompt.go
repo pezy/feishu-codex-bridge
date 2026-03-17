@@ -74,10 +74,14 @@ func normalizeEntry(entry store.ConversationEntry) store.ConversationEntry {
 
 func formatEntry(entry store.ConversationEntry) string {
 	ts := entry.CreatedAt.Format(time.RFC3339)
-	if entry.ContentType == "image" {
-		return fmt.Sprintf("[%s] %s: [image] %s", ts, entry.Source, entry.FilePath)
+	actor := entry.Source
+	if entry.Source == "user" && entry.OpenID != "" {
+		actor = fmt.Sprintf("%s(%s)", entry.Source, entry.OpenID)
 	}
-	return fmt.Sprintf("[%s] %s: %s", ts, entry.Source, entry.Content)
+	if entry.ContentType == "image" {
+		return fmt.Sprintf("[%s] %s: [image] %s", ts, actor, entry.FilePath)
+	}
+	return fmt.Sprintf("[%s] %s: %s", ts, actor, entry.Content)
 }
 
 func sanitize(input string) string {
