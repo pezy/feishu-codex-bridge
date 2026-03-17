@@ -144,6 +144,64 @@ func TestWriteWikiMarkdownReusesCachedTenantToken(t *testing.T) {
 	}
 }
 
+func TestListChatMessagesRefreshesInvalidTenantToken(t *testing.T) {
+	now := time.Unix(400, 0)
+	tokenFetches := 0
+	callTokens := make([]string, 0, 2)
+
+	client := &Client{
+		appID:     "cli_xxx",
+		appSecret: "secret_xxx",
+		now:       func() time.Time { return now },
+		getTenantAccessToken: func(ctx context.Context, req *larkcore.SelfBuiltTenantAccessTokenReq) (*larkcore.TenantAccessTokenResp, error) {
+			tokenFetches++
+			return &larkcore.TenantAccessTokenResp{
+				ApiResp: &larkcore.ApiResp{},
+				CodeError: larkcore.CodeError{
+					Code: 0,
+				},
+				Expire:            7200,
+				TenantAccessToken: "fresh-token",
+			}, nil
+		},
+		listChatMessages: func(ctx context.Context, chatID string, endTime string, pageSize int, tenantAccessToken string) ([]ChatMessage, error) {
+			callTokens = append(callTokens, tenantAccessToken)
+			if tenantAccessToken == "stale-token" {
+				return nil, newAPIError("list chat messages", errCodeTenantAccessTokenInvalid, "invalid", "req-stale")
+			}
+			return []ChatMessage{{MessageID: "om_1", ChatID: chatID}}, nil
+		},
+	}
+	client.tenantAccessToken = "stale-token"
+	client.tenantAccessTokenExpireAt = now.Add(time.Hour)
+
+	items, err := client.ListChatMessages(context.Background(), "oc_123", "1700000000", 20)
+	if err != nil {
+		t.Fatalf("ListChatMessages: %v", err)
+	}
+	if len(items) != 1 || items[0].MessageID != "om_1" {
+		t.Fatalf("unexpected items: %#v", items)
+	}
+	if tokenFetches != 1 {
+		t.Fatalf("unexpected token fetches: %d", tokenFetches)
+	}
+	if len(callTokens) != 2 || callTokens[0] != "stale-token" || callTokens[1] != "fresh-token" {
+		t.Fatalf("unexpected call tokens: %#v", callTokens)
+	}
+}
+
+func TestPreviewMessageContent(t *testing.T) {
+	if got := PreviewMessageContent("text", `{"text":"hello"}`); got != "hello" {
+		t.Fatalf("unexpected text preview: %q", got)
+	}
+	if got := PreviewMessageContent("image", `{"image_key":"img_1"}`); got != "[image]" {
+		t.Fatalf("unexpected image preview: %q", got)
+	}
+	if got := PreviewMessageContent("file", `{}`); got != "[file]" {
+		t.Fatalf("unexpected file preview: %q", got)
+	}
+}
+
 func TestResolveWikiDocumentIDFromDocxURL(t *testing.T) {
 	documentID, err := resolveWikiDocumentID(context.Background(), nil, "https://example.feishu.cn/docx/AbCdEf123?from=wiki", "tenant-token")
 	if err != nil {

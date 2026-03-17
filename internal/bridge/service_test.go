@@ -2,13 +2,58 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"github.com/pezy/feishu-codex-bridge/internal/config"
+	"github.com/pezy/feishu-codex-bridge/internal/feishu"
 	"github.com/pezy/feishu-codex-bridge/internal/store"
 )
+
+type fakeFeishuClient struct {
+	listChatMessages func(context.Context, string, string, int) ([]feishu.ChatMessage, error)
+}
+
+func (f *fakeFeishuClient) SendTextToOpenID(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeFeishuClient) SendImageToOpenID(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeFeishuClient) ReplyText(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeFeishuClient) ReplyImage(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeFeishuClient) AddReaction(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeFeishuClient) DeleteReaction(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeFeishuClient) DownloadMessageImage(context.Context, string, string) (feishu.MessageImage, error) {
+	return feishu.MessageImage{}, nil
+}
+
+func (f *fakeFeishuClient) WriteWikiMarkdown(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeFeishuClient) ListChatMessages(ctx context.Context, chatID string, endTime string, pageSize int) ([]feishu.ChatMessage, error) {
+	if f.listChatMessages == nil {
+		return nil, nil
+	}
+	return f.listChatMessages(ctx, chatID, endTime, pageSize)
+}
 
 func TestMaskOpenID(t *testing.T) {
 	if got := maskOpenID("ou_1234567890"); got != "ou_1...7890" {
@@ -189,6 +234,130 @@ func TestHandleIncomingGroupTextWithoutMentionRecordsContextOnly(t *testing.T) {
 	}
 	if lastExecution != nil {
 		t.Fatalf("expected no execution for passive group context, got %+v", lastExecution)
+	}
+}
+
+func TestBuildPromptHistoryUsesRemoteGroupMessages(t *testing.T) {
+	sqliteStore, err := store.NewSQLiteStore(t.TempDir() + "/bridge.db")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() {
+		_ = sqliteStore.Close()
+	}()
+
+	service := &Service{
+		store: sqliteStore,
+		cfg: config.Config{
+			RecentContextLimit: 2,
+		},
+		feishu: &fakeFeishuClient{
+			listChatMessages: func(ctx context.Context, chatID string, endTime string, pageSize int) ([]feishu.ChatMessage, error) {
+				return []feishu.ChatMessage{
+					{
+						MessageID:  "om_current",
+						ChatID:     chatID,
+						SenderID:   "ou_current",
+						SenderType: "user",
+						SenderRole: "open_id",
+						MsgType:    "text",
+						Content:    `{"text":"@bot 看一下"}`,
+						CreatedAt:  time.Unix(1700000200, 0).UTC(),
+					},
+					{
+						MessageID:  "om_2",
+						ChatID:     chatID,
+						SenderID:   "ou_2",
+						SenderType: "user",
+						SenderRole: "open_id",
+						MsgType:    "text",
+						Content:    `{"text":"第二条"}`,
+						CreatedAt:  time.Unix(1700000100, 0).UTC(),
+					},
+					{
+						MessageID:  "om_1",
+						ChatID:     chatID,
+						SenderType: "app",
+						SenderRole: "app_id",
+						MsgType:    "text",
+						Content:    `{"text":"第一条回复"}`,
+						CreatedAt:  time.Unix(1700000000, 0).UTC(),
+					},
+				}, nil
+			},
+		},
+	}
+	incoming := &incomingMessage{
+		Message: &larkim.EventMessage{
+			CreateTime: stringPtr("1700000200000"),
+		},
+		MessageID:   "om_current",
+		ChatID:      "oc_123",
+		ChatType:    "group",
+		HasMentions: true,
+	}
+
+	history, err := service.buildPromptHistory(context.Background(), incoming)
+	if err != nil {
+		t.Fatalf("buildPromptHistory: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("unexpected history len: %+v", history)
+	}
+	if history[0].MessageID != "om_1" || history[0].Source != "assistant" {
+		t.Fatalf("unexpected first history item: %+v", history[0])
+	}
+	if history[1].MessageID != "om_2" || history[1].OpenID != "ou_2" {
+		t.Fatalf("unexpected second history item: %+v", history[1])
+	}
+}
+
+func TestBuildPromptHistoryFallsBackToLocalWhenRemoteFails(t *testing.T) {
+	sqliteStore, err := store.NewSQLiteStore(t.TempDir() + "/bridge.db")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() {
+		_ = sqliteStore.Close()
+	}()
+
+	if err := sqliteStore.AppendConversation(context.Background(), store.ConversationEntry{
+		Source:      "user",
+		OpenID:      "ou_local",
+		ChatID:      "oc_123",
+		ChatType:    "group",
+		MessageID:   "om_local",
+		Content:     "本地上下文",
+		ContentType: "text",
+		CreatedAt:   time.Unix(1700000000, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AppendConversation: %v", err)
+	}
+
+	service := &Service{
+		store: sqliteStore,
+		cfg: config.Config{
+			RecentContextLimit: 2,
+		},
+		feishu: &fakeFeishuClient{
+			listChatMessages: func(ctx context.Context, chatID string, endTime string, pageSize int) ([]feishu.ChatMessage, error) {
+				return nil, errors.New("boom")
+			},
+		},
+	}
+	incoming := &incomingMessage{
+		MessageID:   "om_current",
+		ChatID:      "oc_123",
+		ChatType:    "group",
+		HasMentions: true,
+	}
+
+	history, err := service.buildPromptHistory(context.Background(), incoming)
+	if err != nil {
+		t.Fatalf("buildPromptHistory: %v", err)
+	}
+	if len(history) != 1 || history[0].MessageID != "om_local" {
+		t.Fatalf("unexpected fallback history: %+v", history)
 	}
 }
 

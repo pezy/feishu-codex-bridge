@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ type Client struct {
 	sendImageToOpenID    func(context.Context, string, string, string) (string, error)
 	replyText            func(context.Context, string, string, string) (string, error)
 	replyImage           func(context.Context, string, string, string) (string, error)
+	listChatMessages     func(context.Context, string, string, int, string) ([]ChatMessage, error)
 	addReaction          func(context.Context, string, string, string) (string, error)
 	deleteReaction       func(context.Context, string, string, string) error
 	uploadImage          func(context.Context, string, string) (string, error)
@@ -51,6 +53,22 @@ type Client struct {
 type messageImage struct {
 	FileName string
 	Data     []byte
+}
+
+type MessageImage = messageImage
+
+type ChatMessage struct {
+	MessageID  string
+	ChatID     string
+	ThreadID   string
+	ParentID   string
+	SenderID   string
+	SenderType string
+	SenderRole string
+	MsgType    string
+	Content    string
+	CreatedAt  time.Time
+	Deleted    bool
 }
 
 func New(appID string, appSecret string) *Client {
@@ -162,6 +180,38 @@ func New(appID string, appSecret string) *Client {
 		}
 		return value(resp.Data.MessageId), nil
 	}
+	client.listChatMessages = func(ctx context.Context, chatID string, endTime string, pageSize int, tenantAccessToken string) ([]ChatMessage, error) {
+		if pageSize <= 0 {
+			pageSize = 20
+		}
+		builder := larkim.NewListMessageReqBuilder().
+			ContainerIdType("chat").
+			ContainerId(chatID).
+			SortType(larkim.SortTypeListMessageByCreateTimeDesc).
+			PageSize(pageSize)
+		if strings.TrimSpace(endTime) != "" {
+			builder.EndTime(endTime)
+		}
+		resp, err := sdk.Im.V1.Message.List(ctx, builder.Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return nil, fmt.Errorf("list chat messages: %w", err)
+		}
+		if !resp.Success() {
+			return nil, newAPIError("list chat messages", resp.Code, resp.Msg, resp.RequestId())
+		}
+		if resp.Data == nil {
+			return nil, nil
+		}
+
+		items := make([]ChatMessage, 0, len(resp.Data.Items))
+		for _, item := range resp.Data.Items {
+			if item == nil {
+				continue
+			}
+			items = append(items, toChatMessage(item))
+		}
+		return items, nil
+	}
 	client.addReaction = func(ctx context.Context, messageID string, emojiType string, tenantAccessToken string) (string, error) {
 		resp, err := sdk.Im.V1.MessageReaction.Create(ctx, larkim.NewCreateMessageReactionReqBuilder().
 			MessageId(messageID).
@@ -247,6 +297,12 @@ func (c *Client) ReplyImage(ctx context.Context, messageID string, imagePath str
 func (c *Client) AddReaction(ctx context.Context, messageID string, emojiType string) (string, error) {
 	return withTenantAccessToken(ctx, c, func(token string) (string, error) {
 		return c.addReaction(ctx, messageID, emojiType, token)
+	})
+}
+
+func (c *Client) ListChatMessages(ctx context.Context, chatID string, endTime string, pageSize int) ([]ChatMessage, error) {
+	return withTenantAccessToken(ctx, c, func(token string) ([]ChatMessage, error) {
+		return c.listChatMessages(ctx, chatID, endTime, pageSize, token)
 	})
 }
 
@@ -385,6 +441,75 @@ func value(input *string) string {
 		return ""
 	}
 	return *input
+}
+
+func toChatMessage(message *larkim.Message) ChatMessage {
+	msg := ChatMessage{
+		MessageID: value(message.MessageId),
+		ChatID:    value(message.ChatId),
+		ThreadID:  value(message.ThreadId),
+		ParentID:  value(message.ParentId),
+		MsgType:   value(message.MsgType),
+		CreatedAt: parseMessageTimestamp(value(message.CreateTime)),
+		Deleted:   message.Deleted != nil && *message.Deleted,
+	}
+	if message.Sender != nil {
+		msg.SenderID = value(message.Sender.Id)
+		msg.SenderType = value(message.Sender.SenderType)
+		msg.SenderRole = value(message.Sender.IdType)
+	}
+	if message.Body != nil {
+		msg.Content = value(message.Body.Content)
+	}
+	return msg
+}
+
+func parseMessageTimestamp(input string) time.Time {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return time.Time{}
+	}
+
+	switch len(input) {
+	case 13:
+		var ms int64
+		if _, err := fmt.Sscanf(input, "%d", &ms); err == nil {
+			return time.UnixMilli(ms).UTC()
+		}
+	case 10:
+		var sec int64
+		if _, err := fmt.Sscanf(input, "%d", &sec); err == nil {
+			return time.Unix(sec, 0).UTC()
+		}
+	}
+
+	var sec int64
+	if _, err := fmt.Sscanf(input, "%d", &sec); err == nil {
+		return time.Unix(sec, 0).UTC()
+	}
+	return time.Time{}
+}
+
+func PreviewMessageContent(msgType string, rawContent string) string {
+	msgType = strings.TrimSpace(msgType)
+	rawContent = strings.TrimSpace(rawContent)
+
+	switch msgType {
+	case "text":
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(rawContent), &body); err == nil && strings.TrimSpace(body.Text) != "" {
+			return strings.TrimSpace(body.Text)
+		}
+	case "image":
+		return "[image]"
+	}
+
+	if msgType == "" {
+		return ""
+	}
+	return fmt.Sprintf("[%s]", msgType)
 }
 
 func resolveWikiDocumentID(ctx context.Context, sdk *lark.Client, wikiURL string, tenantAccessToken string) (string, error) {

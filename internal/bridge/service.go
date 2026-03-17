@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,7 @@ type ExecutionSnapshot struct {
 type Service struct {
 	cfg    config.Config
 	store  *store.SQLiteStore
-	feishu *feishu.Client
+	feishu feishuClient
 	runner *codex.Runner
 
 	mu          sync.RWMutex
@@ -70,6 +71,18 @@ type Service struct {
 	lastEventAt *time.Time
 	lastConnAt  *time.Time
 	lastExec    *ExecutionSnapshot
+}
+
+type feishuClient interface {
+	SendTextToOpenID(context.Context, string, string) (string, error)
+	SendImageToOpenID(context.Context, string, string) (string, error)
+	ReplyText(context.Context, string, string) (string, error)
+	ReplyImage(context.Context, string, string) (string, error)
+	AddReaction(context.Context, string, string) (string, error)
+	DeleteReaction(context.Context, string, string) error
+	DownloadMessageImage(context.Context, string, string) (feishu.MessageImage, error)
+	WriteWikiMarkdown(context.Context, string, string) error
+	ListChatMessages(context.Context, string, string, int) ([]feishu.ChatMessage, error)
 }
 
 type incomingMessage struct {
@@ -321,7 +334,7 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 	}
 
 	executionID := randomID("exec")
-	history, err := s.store.RecentConversationsByChat(ctx, incoming.ChatID, s.cfg.RecentContextLimit)
+	history, err := s.buildPromptHistory(ctx, incoming)
 	if err != nil {
 		return err
 	}
@@ -456,6 +469,57 @@ func (s *Service) prepareIncomingConversation(ctx context.Context, incoming *inc
 	}
 }
 
+func (s *Service) buildPromptHistory(ctx context.Context, incoming *incomingMessage) ([]store.ConversationEntry, error) {
+	localHistory, err := s.store.RecentConversationsByChat(ctx, incoming.ChatID, s.cfg.RecentContextLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	if incoming.ChatType != "group" || !incoming.HasMentions {
+		return localHistory, nil
+	}
+
+	remoteHistory, err := s.fetchGroupHistory(ctx, incoming)
+	if err != nil {
+		log.Printf("fetch remote group history failed, fallback to local: %v", err)
+		return localHistory, nil
+	}
+	if len(remoteHistory) == 0 {
+		return localHistory, nil
+	}
+	return remoteHistory, nil
+}
+
+func (s *Service) fetchGroupHistory(ctx context.Context, incoming *incomingMessage) ([]store.ConversationEntry, error) {
+	endTime := messageEndTimeSeconds(incoming.Message)
+	pageSize := s.cfg.RecentContextLimit + 8
+	if pageSize < 20 {
+		pageSize = 20
+	}
+
+	items, err := s.feishu.ListChatMessages(ctx, incoming.ChatID, endTime, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	history := make([]store.ConversationEntry, 0, s.cfg.RecentContextLimit)
+	for _, item := range items {
+		if item.MessageID == incoming.MessageID || item.Deleted {
+			continue
+		}
+		entry, ok := conversationEntryFromChatMessage(item)
+		if !ok {
+			continue
+		}
+		history = append(history, entry)
+		if len(history) == s.cfg.RecentContextLimit {
+			break
+		}
+	}
+	reverseConversationEntries(history)
+	return history, nil
+}
+
 func (s *Service) downloadIncomingImage(ctx context.Context, incoming *incomingMessage) (string, error) {
 	image, err := s.feishu.DownloadMessageImage(ctx, incoming.MessageID, incoming.ImageKey)
 	if err != nil {
@@ -473,6 +537,37 @@ func (s *Service) downloadIncomingImage(ctx context.Context, incoming *incomingM
 		return "", fmt.Errorf("write incoming image: %w", err)
 	}
 	return imagePath, nil
+}
+
+func conversationEntryFromChatMessage(message feishu.ChatMessage) (store.ConversationEntry, bool) {
+	content := feishu.PreviewMessageContent(message.MsgType, message.Content)
+	if strings.TrimSpace(content) == "" {
+		return store.ConversationEntry{}, false
+	}
+
+	source := "user"
+	openID := ""
+	if message.SenderType == "app" {
+		source = "assistant"
+	} else if message.SenderRole == "open_id" {
+		openID = message.SenderID
+	}
+
+	createdAt := message.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	return store.ConversationEntry{
+		Source:      source,
+		OpenID:      openID,
+		ChatID:      message.ChatID,
+		ChatType:    "group",
+		MessageID:   message.MessageID,
+		Content:     content,
+		ContentType: "text",
+		CreatedAt:   createdAt,
+	}, true
 }
 
 func (s *Service) replyPayload(ctx context.Context, incoming *incomingMessage, payload responsePayload, createdAt time.Time) ([]string, []error) {
@@ -766,6 +861,31 @@ func excludeMessage(entries []store.ConversationEntry, messageID string) []store
 		filtered = append(filtered, entry)
 	}
 	return filtered
+}
+
+func reverseConversationEntries(entries []store.ConversationEntry) {
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+}
+
+func messageEndTimeSeconds(message *larkim.EventMessage) string {
+	if message == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(value(message.CreateTime))
+	if raw == "" {
+		return ""
+	}
+	millis, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return ""
+	}
+	seconds := millis / 1000
+	if millis%1000 != 0 {
+		seconds++
+	}
+	return strconv.FormatInt(seconds, 10)
 }
 
 type ignoredEventError string
