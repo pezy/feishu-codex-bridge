@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
@@ -27,6 +28,7 @@ type wsLogger struct {
 func NewWSClient(appID string, appSecret string, service BridgeHandler, logLevel larkcore.LogLevel) *larkws.Client {
 	handler := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
+			log.Printf("[WS] received message: chat_type=%s, msg_type=%s", value(event.Event.Message.ChatType), value(event.Event.Message.MessageType))
 			return service.HandleIncomingMessage(ctx, event)
 		}).
 		OnP2ChatMemberBotAddedV1(func(ctx context.Context, event *larkim.P2ChatMemberBotAddedV1) error {

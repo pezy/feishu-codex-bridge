@@ -721,15 +721,51 @@ func (s *Service) markExecution(snapshot *ExecutionSnapshot) {
 
 func (s *Service) shouldTriggerGroupMessage(ctx context.Context, incoming *incomingMessage) bool {
 	if incoming == nil || len(incoming.Mentions) == 0 {
+		log.Printf("[DEBUG] shouldTriggerGroupMessage: no mentions")
 		return false
 	}
 
+	// Log mention details for debugging
+	for i, m := range incoming.Mentions {
+		if m == nil {
+			continue
+		}
+		log.Printf("[DEBUG] mention[%d]: Key=%s, Name=%s, OpenId=%s, UserId=%s",
+			i, value(m.Key), value(m.Name),
+			value(m.Id.OpenId), value(m.Id.UserId))
+	}
+
+	// First check if any mention is a bot mention (by Key starting with @_bot_)
+	// This works even if we can't fetch bot names
+	if mentionsBotByKey(incoming.Mentions) {
+		log.Printf("[DEBUG] shouldTriggerGroupMessage: matched by Key")
+		return true
+	}
+
+	// Check if mention matches configured BotOpenID
+	if s.cfg.BotOpenID != "" && mentionsBotByOpenID(incoming.Mentions, s.cfg.BotOpenID) {
+		log.Printf("[DEBUG] shouldTriggerGroupMessage: matched by BotOpenID")
+		return true
+	}
+
+	// Check if mention matches configured BotMentionNames
+	if len(s.cfg.BotMentionNames) > 0 && mentionsBotByNames(incoming.Mentions, s.cfg.BotMentionNames) {
+		log.Printf("[DEBUG] shouldTriggerGroupMessage: matched by BotMentionNames")
+		return true
+	}
+
+	// Try to get bot mention names and match by name or ID
 	botMentionNames, err := s.botMentionNamesForTrigger(ctx)
 	if err != nil {
 		log.Printf("resolve bot mention names failed: %v", err)
+		// If we can't get names but Key check didn't match, return false
 		return false
 	}
-	return messageMentionsBot(incoming.Mentions, botMentionNames, s.cfg.AppID)
+	log.Printf("[DEBUG] botMentionNames: %v", botMentionNames)
+
+	result := messageMentionsBot(incoming.Mentions, botMentionNames, s.cfg.AppID)
+	log.Printf("[DEBUG] shouldTriggerGroupMessage: result=%v", result)
+	return result
 }
 
 func (s *Service) botMentionNamesForTrigger(ctx context.Context) ([]string, error) {
@@ -844,6 +880,18 @@ func messageMentionsBot(mentions []*larkim.MentionEvent, botMentionNames []strin
 		if mention == nil {
 			continue
 		}
+		// Check if mention.Key is a bot mention (starts with "@_bot_") or contains appID
+		if key := value(mention.Key); key != "" {
+			normalizedKey := normalizeMentionIdentity(key)
+			// Bot mentions in Feishu start with "@_bot_"
+			if strings.HasPrefix(normalizedKey, "@_bot_") {
+				return true
+			}
+			// Also check if Key directly contains the appID
+			if strings.Contains(normalizedKey, normalizedAppID) {
+				return true
+			}
+		}
 		if mentionTargetsAppID(mention, normalizedAppID) {
 			return true
 		}
@@ -861,6 +909,57 @@ func mentionTargetsAppID(mention *larkim.MentionEvent, normalizedAppID string) b
 	return normalizeMentionIdentity(value(mention.Id.OpenId)) == normalizedAppID ||
 		normalizeMentionIdentity(value(mention.Id.UserId)) == normalizedAppID ||
 		normalizeMentionIdentity(value(mention.Id.UnionId)) == normalizedAppID
+}
+
+func mentionsBotByKey(mentions []*larkim.MentionEvent) bool {
+	for _, mention := range mentions {
+		if mention == nil {
+			continue
+		}
+		if key := value(mention.Key); key != "" {
+			normalizedKey := normalizeMentionIdentity(key)
+			// Bot mentions in Feishu start with "@_bot_"
+			if strings.HasPrefix(normalizedKey, "@_bot_") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mentionsBotByOpenID(mentions []*larkim.MentionEvent, botOpenID string) bool {
+	if botOpenID == "" {
+		return false
+	}
+	normalizedBotOpenID := normalizeMentionIdentity(botOpenID)
+	for _, mention := range mentions {
+		if mention == nil || mention.Id == nil {
+			continue
+		}
+		if normalizeMentionIdentity(value(mention.Id.OpenId)) == normalizedBotOpenID {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionsBotByNames(mentions []*larkim.MentionEvent, botNames []string) bool {
+	if len(botNames) == 0 {
+		return false
+	}
+	normalizedNames := make(map[string]struct{}, len(botNames))
+	for _, name := range botNames {
+		normalizedNames[normalizeMentionIdentity(name)] = struct{}{}
+	}
+	for _, mention := range mentions {
+		if mention == nil {
+			continue
+		}
+		if _, ok := normalizedNames[normalizeMentionIdentity(value(mention.Name))]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeMentionIdentity(input string) string {

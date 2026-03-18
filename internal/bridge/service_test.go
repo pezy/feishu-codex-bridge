@@ -320,6 +320,35 @@ func TestMessageMentionsBot(t *testing.T) {
 	}}, nil, "cli_bot_app") {
 		t.Fatalf("expected app id mention to match")
 	}
+	// Test mention.Key contains appID (e.g., "@_bot_1" or "cli_bot_app")
+	if !messageMentionsBot([]*larkim.MentionEvent{{
+		Key: stringPtr("cli_bot_app"),
+	}}, nil, "cli_bot_app") {
+		t.Fatalf("expected mention.Key containing appID to match")
+	}
+	if !messageMentionsBot([]*larkim.MentionEvent{{
+		Key: stringPtr("@cli_bot_app"),
+	}}, nil, "cli_bot_app") {
+		t.Fatalf("expected mention.Key with @ prefix to match")
+	}
+	// Bot mentions in Feishu start with "@_bot_"
+	if !messageMentionsBot([]*larkim.MentionEvent{{
+		Key: stringPtr("@_bot_1"),
+	}}, nil, "cli_bot_app") {
+		t.Fatalf("expected mention.Key starting with @_bot_ to match")
+	}
+	if !messageMentionsBot([]*larkim.MentionEvent{{
+		Key: stringPtr("@_bot_abc123"),
+	}}, nil, "cli_bot_app") {
+		t.Fatalf("expected mention.Key with bot prefix to match")
+	}
+	// Key does not contain appID should not match
+	if messageMentionsBot([]*larkim.MentionEvent{{
+		Key: stringPtr("@_user_1"),
+		Name: stringPtr("Alice"),
+	}}, nil, "cli_bot_app") {
+		t.Fatalf("expected other user mention via Key not to match bot")
+	}
 }
 
 func TestBuildPromptHistoryUsesRemoteGroupMessages(t *testing.T) {

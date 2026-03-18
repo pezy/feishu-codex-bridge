@@ -264,7 +264,7 @@ func New(appID string, appSecret string) *Client {
 	}
 	client.getBotMentionNames = func(ctx context.Context, tenantAccessToken string) ([]string, error) {
 		resp, err := sdk.Application.V6.Application.Get(ctx, larkapplication.NewGetApplicationReqBuilder().
-			AppId("me").
+			AppId(client.appID).
 			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
 		if err != nil {
 			return nil, fmt.Errorf("get application info: %w", err)

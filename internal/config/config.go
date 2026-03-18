@@ -26,6 +26,8 @@ type Config struct {
 	AppID              string        `yaml:"app_id"`
 	AppSecret          string        `yaml:"app_secret"`
 	AuthorizedOpenID   string        `yaml:"authorized_open_id"`
+	BotOpenID          string        `yaml:"bot_open_id"`   // 机器人的 OpenID，用于群聊 @ 触发
+	BotMentionNames    []string      `yaml:"bot_mention_names"` // 机器人被 @ 时的名称列表
 	AuthorizedGroupIDs []string      `yaml:"authorized_group_chat_ids"`
 	HTTPAddr           string        `yaml:"http_addr"`
 	DefaultWorkDir     string        `yaml:"default_work_dir"`
