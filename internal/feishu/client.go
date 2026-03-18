@@ -14,6 +14,7 @@ import (
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	larkapplication "github.com/larksuite/oapi-sdk-go/v3/service/application/v6"
 	larkdocx "github.com/larksuite/oapi-sdk-go/v3/service/docx/v1"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkwiki "github.com/larksuite/oapi-sdk-go/v3/service/wiki/v2"
@@ -43,6 +44,7 @@ type Client struct {
 	deleteReaction       func(context.Context, string, string, string) error
 	uploadImage          func(context.Context, string, string) (string, error)
 	downloadMessageImage func(context.Context, string, string, string) (messageImage, error)
+	getBotMentionNames   func(context.Context, string) ([]string, error)
 	writeWikiMarkdown    func(context.Context, string, string, string) error
 
 	mu                        sync.Mutex
@@ -260,6 +262,21 @@ func New(appID string, appSecret string) *Client {
 		}
 		return messageImage{FileName: resp.FileName, Data: data}, nil
 	}
+	client.getBotMentionNames = func(ctx context.Context, tenantAccessToken string) ([]string, error) {
+		resp, err := sdk.Application.V6.Application.Get(ctx, larkapplication.NewGetApplicationReqBuilder().
+			AppId("me").
+			Build(), larkcore.WithTenantAccessToken(tenantAccessToken))
+		if err != nil {
+			return nil, fmt.Errorf("get application info: %w", err)
+		}
+		if !resp.Success() {
+			return nil, newAPIError("get application info", resp.Code, resp.Msg, resp.RequestId())
+		}
+		if resp.Data == nil {
+			return nil, nil
+		}
+		return collectBotMentionNames(resp.Data.App), nil
+	}
 	client.writeWikiMarkdown = func(ctx context.Context, wikiURL string, markdown string, tenantAccessToken string) error {
 		documentID, err := resolveWikiDocumentID(ctx, sdk, wikiURL, tenantAccessToken)
 		if err != nil {
@@ -303,6 +320,12 @@ func (c *Client) AddReaction(ctx context.Context, messageID string, emojiType st
 func (c *Client) ListChatMessages(ctx context.Context, chatID string, endTime string, pageSize int) ([]ChatMessage, error) {
 	return withTenantAccessToken(ctx, c, func(token string) ([]ChatMessage, error) {
 		return c.listChatMessages(ctx, chatID, endTime, pageSize, token)
+	})
+}
+
+func (c *Client) GetBotMentionNames(ctx context.Context) ([]string, error) {
+	return withTenantAccessToken(ctx, c, func(token string) ([]string, error) {
+		return c.getBotMentionNames(ctx, token)
 	})
 }
 
@@ -400,6 +423,35 @@ func tenantAccessTokenTTL(expireSeconds int) time.Duration {
 		return time.Second
 	}
 	return ttl
+}
+
+func collectBotMentionNames(app *larkapplication.Application) []string {
+	names := make([]string, 0, 1)
+	seen := make(map[string]struct{})
+	appendName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	if app == nil {
+		return names
+	}
+
+	appendName(value(app.AppName))
+	for _, item := range app.I18n {
+		if item == nil {
+			continue
+		}
+		appendName(value(item.Name))
+	}
+	return names
 }
 
 type apiError struct {

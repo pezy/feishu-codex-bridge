@@ -71,6 +71,9 @@ type Service struct {
 	lastEventAt *time.Time
 	lastConnAt  *time.Time
 	lastExec    *ExecutionSnapshot
+
+	botMentionNames       []string
+	botMentionNamesLoaded bool
 }
 
 type feishuClient interface {
@@ -83,6 +86,7 @@ type feishuClient interface {
 	DownloadMessageImage(context.Context, string, string) (feishu.MessageImage, error)
 	WriteWikiMarkdown(context.Context, string, string) error
 	ListChatMessages(context.Context, string, string, int) ([]feishu.ChatMessage, error)
+	GetBotMentionNames(context.Context) ([]string, error)
 }
 
 type incomingMessage struct {
@@ -96,6 +100,7 @@ type incomingMessage struct {
 	ImageKey     string
 	RawContent   string
 	HasMentions  bool
+	Mentions     []*larkim.MentionEvent
 }
 
 type responsePayload struct {
@@ -291,7 +296,7 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 		if incoming.MessageType != "text" {
 			return nil
 		}
-		shouldTrigger = incoming.HasMentions
+		shouldTrigger = s.shouldTriggerGroupMessage(ctx, incoming)
 	default:
 		return nil
 	}
@@ -314,13 +319,15 @@ func (s *Service) HandleIncomingMessage(ctx context.Context, event *larkim.P2Mes
 		return nil
 	}
 
-	entry, currentPromptMessage, err := s.prepareIncomingConversation(ctx, incoming, now)
-	if err != nil {
-		return err
+	// Only build prompt entry when triggering execution (not for passive group context)
+	var currentPromptMessage string
+	if shouldTrigger {
+		_, currentPromptMessage, err = s.prepareIncomingConversation(ctx, incoming, now)
+		if err != nil {
+			return err
+		}
 	}
-	if err := s.store.AppendConversation(ctx, entry); err != nil {
-		log.Printf("append inbound conversation: %v", err)
-	}
+
 	if !shouldTrigger {
 		if err := s.store.UpdateMessageState(ctx, incoming.MessageID, "recorded", "", "", "", "", &now); err != nil {
 			log.Printf("update passive context message state: %v", err)
@@ -712,6 +719,48 @@ func (s *Service) markExecution(snapshot *ExecutionSnapshot) {
 	s.lastExec = snapshot
 }
 
+func (s *Service) shouldTriggerGroupMessage(ctx context.Context, incoming *incomingMessage) bool {
+	if incoming == nil || len(incoming.Mentions) == 0 {
+		return false
+	}
+
+	botMentionNames, err := s.botMentionNamesForTrigger(ctx)
+	if err != nil {
+		log.Printf("resolve bot mention names failed: %v", err)
+		return false
+	}
+	return messageMentionsBot(incoming.Mentions, botMentionNames, s.cfg.AppID)
+}
+
+func (s *Service) botMentionNamesForTrigger(ctx context.Context) ([]string, error) {
+	s.mu.RLock()
+	if s.botMentionNamesLoaded {
+		names := append([]string(nil), s.botMentionNames...)
+		s.mu.RUnlock()
+		return names, nil
+	}
+	s.mu.RUnlock()
+
+	if s.feishu == nil {
+		return nil, errors.New("feishu client is not configured")
+	}
+
+	names, err := s.feishu.GetBotMentionNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names = dedupeMentionNames(names)
+
+	s.mu.Lock()
+	if !s.botMentionNamesLoaded {
+		s.botMentionNames = append([]string(nil), names...)
+		s.botMentionNamesLoaded = true
+	}
+	names = append([]string(nil), s.botMentionNames...)
+	s.mu.Unlock()
+	return names, nil
+}
+
 func parseIncoming(event *larkim.P2MessageReceiveV1) (*incomingMessage, error) {
 	if event == nil || event.Event == nil || event.Event.Message == nil || event.Event.Sender == nil || event.Event.Sender.SenderId == nil {
 		return nil, fmt.Errorf("missing event payload")
@@ -742,6 +791,7 @@ func parseIncoming(event *larkim.P2MessageReceiveV1) (*incomingMessage, error) {
 		SenderOpenID: openID,
 		RawContent:   value(message.Content),
 		HasMentions:  len(message.Mentions) > 0,
+		Mentions:     append([]*larkim.MentionEvent(nil), message.Mentions...),
 	}
 
 	switch messageType {
@@ -773,6 +823,66 @@ func parseIncoming(event *larkim.P2MessageReceiveV1) (*incomingMessage, error) {
 	}
 
 	return incoming, nil
+}
+
+func messageMentionsBot(mentions []*larkim.MentionEvent, botMentionNames []string, appID string) bool {
+	if len(mentions) == 0 {
+		return false
+	}
+
+	normalizedNames := make(map[string]struct{}, len(botMentionNames))
+	for _, name := range botMentionNames {
+		name = normalizeMentionIdentity(name)
+		if name == "" {
+			continue
+		}
+		normalizedNames[name] = struct{}{}
+	}
+
+	normalizedAppID := normalizeMentionIdentity(appID)
+	for _, mention := range mentions {
+		if mention == nil {
+			continue
+		}
+		if mentionTargetsAppID(mention, normalizedAppID) {
+			return true
+		}
+		if _, ok := normalizedNames[normalizeMentionIdentity(value(mention.Name))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionTargetsAppID(mention *larkim.MentionEvent, normalizedAppID string) bool {
+	if mention == nil || mention.Id == nil || normalizedAppID == "" {
+		return false
+	}
+	return normalizeMentionIdentity(value(mention.Id.OpenId)) == normalizedAppID ||
+		normalizeMentionIdentity(value(mention.Id.UserId)) == normalizedAppID ||
+		normalizeMentionIdentity(value(mention.Id.UnionId)) == normalizedAppID
+}
+
+func normalizeMentionIdentity(input string) string {
+	return strings.ToLower(strings.TrimSpace(input))
+}
+
+func dedupeMentionNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := normalizeMentionIdentity(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 func parseResponsePayload(output string) responsePayload {

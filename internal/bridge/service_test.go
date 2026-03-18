@@ -14,6 +14,7 @@ import (
 
 type fakeFeishuClient struct {
 	listChatMessages func(context.Context, string, string, int) ([]feishu.ChatMessage, error)
+	getBotNames      func(context.Context) ([]string, error)
 }
 
 func (f *fakeFeishuClient) SendTextToOpenID(context.Context, string, string) (string, error) {
@@ -53,6 +54,13 @@ func (f *fakeFeishuClient) ListChatMessages(ctx context.Context, chatID string, 
 		return nil, nil
 	}
 	return f.listChatMessages(ctx, chatID, endTime, pageSize)
+}
+
+func (f *fakeFeishuClient) GetBotMentionNames(ctx context.Context) ([]string, error) {
+	if f.getBotNames == nil {
+		return nil, nil
+	}
+	return f.getBotNames(ctx)
 }
 
 func TestMaskOpenID(t *testing.T) {
@@ -111,11 +119,11 @@ func TestParseIncomingP2PText(t *testing.T) {
 }
 
 func TestParseIncomingGroupMentionText(t *testing.T) {
-	incoming, err := parseIncoming(buildEvent("group", "text", `{"text":"@bot hi"}`, []*larkim.MentionEvent{{Key: stringPtr("@_user_1")}}))
+	incoming, err := parseIncoming(buildEvent("group", "text", `{"text":"@bot hi"}`, []*larkim.MentionEvent{{Key: stringPtr("@_user_1"), Name: stringPtr("bot")}}))
 	if err != nil {
 		t.Fatalf("parseIncoming: %v", err)
 	}
-	if !incoming.HasMentions {
+	if !incoming.HasMentions || len(incoming.Mentions) != 1 {
 		t.Fatalf("expected group message to carry mentions")
 	}
 }
@@ -221,11 +229,9 @@ func TestHandleIncomingGroupTextWithoutMentionRecordsContextOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecentConversationsByChat: %v", err)
 	}
-	if len(history) != 1 {
-		t.Fatalf("expected one recorded context entry, got %+v", history)
-	}
-	if history[0].Content != "前情提要" || history[0].ChatType != "group" {
-		t.Fatalf("unexpected recorded entry: %+v", history[0])
+	// No passive context recording for group messages without @ mention
+	if len(history) != 0 {
+		t.Fatalf("expected no recorded context entry, got %+v", history)
 	}
 
 	lastExecution, err := sqliteStore.LastExecution(context.Background())
@@ -234,6 +240,85 @@ func TestHandleIncomingGroupTextWithoutMentionRecordsContextOnly(t *testing.T) {
 	}
 	if lastExecution != nil {
 		t.Fatalf("expected no execution for passive group context, got %+v", lastExecution)
+	}
+}
+
+func TestHandleIncomingGroupTextMentioningOtherUserRecordsContextOnly(t *testing.T) {
+	sqliteStore, err := store.NewSQLiteStore(t.TempDir() + "/bridge.db")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() {
+		_ = sqliteStore.Close()
+	}()
+
+	service := &Service{
+		store: sqliteStore,
+		cfg: config.Config{
+			AppID:              "cli_bot_app",
+			RecentContextLimit: 12,
+		},
+		feishu: &fakeFeishuClient{
+			getBotNames: func(context.Context) ([]string, error) {
+				return []string{"Codex Bot"}, nil
+			},
+		},
+	}
+
+	event := buildEvent("group", "text", `{"text":"@Alice 帮我看下"}`, []*larkim.MentionEvent{{
+		Key:  stringPtr("@_user_1"),
+		Name: stringPtr("Alice"),
+		Id: &larkim.UserId{
+			OpenId: stringPtr("ou_alice"),
+		},
+	}})
+	if err := service.HandleIncomingMessage(context.Background(), event); err != nil {
+		t.Fatalf("HandleIncomingMessage: %v", err)
+	}
+
+	history, err := sqliteStore.RecentConversationsByChat(context.Background(), "oc_123", 10)
+	if err != nil {
+		t.Fatalf("RecentConversationsByChat: %v", err)
+	}
+	// No passive context recording for group messages without @ bot mention
+	if len(history) != 0 {
+		t.Fatalf("expected no recorded context entry, got %+v", history)
+	}
+
+	lastExecution, err := sqliteStore.LastExecution(context.Background())
+	if err != nil {
+		t.Fatalf("LastExecution: %v", err)
+	}
+	if lastExecution != nil {
+		t.Fatalf("expected no execution when mentioning another user, got %+v", lastExecution)
+	}
+}
+
+func TestMessageMentionsBot(t *testing.T) {
+	mentions := []*larkim.MentionEvent{
+		{
+			Name: stringPtr("Codex Bot"),
+		},
+		{
+			Name: stringPtr("Alice"),
+			Id: &larkim.UserId{
+				OpenId: stringPtr("ou_alice"),
+			},
+		},
+	}
+
+	if !messageMentionsBot(mentions, []string{"Codex Bot", "Codex 机器人"}, "cli_bot_app") {
+		t.Fatalf("expected bot mention to match")
+	}
+	if messageMentionsBot(mentions[1:], []string{"Codex Bot"}, "cli_bot_app") {
+		t.Fatalf("expected other user mention not to match bot")
+	}
+	if !messageMentionsBot([]*larkim.MentionEvent{{
+		Id: &larkim.UserId{
+			UserId: stringPtr("cli_bot_app"),
+		},
+	}}, nil, "cli_bot_app") {
+		t.Fatalf("expected app id mention to match")
 	}
 }
 
